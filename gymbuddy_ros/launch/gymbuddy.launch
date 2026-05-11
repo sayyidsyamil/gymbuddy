@@ -1,0 +1,27 @@
+<launch>
+  <arg name="camera_device" default="0"/>
+  <arg name="initial_target" default="10"/>
+  <arg name="qwen_gguf" default="$(env GYMBUDDY_QWEN_GGUF)"/>
+
+  <node pkg="gymbuddy_ros" type="camera_input_node.py" name="camera_input" output="screen">
+    <param name="device" value="$(arg camera_device)"/>
+  </node>
+
+  <node pkg="gymbuddy_ros" type="pose_detection_node.py" name="pose_detection" output="screen"/>
+  <node pkg="gymbuddy_ros" type="form_analysis_node.py" name="form_analysis" output="screen"/>
+  <node pkg="gymbuddy_ros" type="rep_counter_node.py"   name="rep_counter"   output="screen"/>
+
+  <node pkg="gymbuddy_ros" type="wake_word_node.py"        name="wake_word"        output="screen"/>
+  <node pkg="gymbuddy_ros" type="speech_to_text_node.py"   name="speech_to_text"   output="screen"/>
+  <node pkg="gymbuddy_ros" type="intent_extractor_node.py" name="intent_extractor" output="screen"/>
+
+  <node pkg="gymbuddy_ros" type="llm_decision_node.py" name="llm_decision" output="screen">
+    <param name="model_path" value="$(arg qwen_gguf)"/>
+  </node>
+  <node pkg="gymbuddy_ros" type="workout_manager_node.py" name="workout_manager" output="screen">
+    <param name="initial_target" value="$(arg initial_target)"/>
+  </node>
+  <node pkg="gymbuddy_ros" type="motivation_node.py" name="motivation" output="screen"/>
+
+  <node pkg="gymbuddy_ros" type="text_to_speech_node.py" name="text_to_speech" output="screen"/>
+</launch>

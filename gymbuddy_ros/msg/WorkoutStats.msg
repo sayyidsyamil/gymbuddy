@@ -1,0 +1,8 @@
+Header header
+string exercise
+int32 clean_reps
+int32 total_attempts
+int32 target_reps
+float32 last_rep_seconds
+float32 last_min_angle
+string last_rep_issue
