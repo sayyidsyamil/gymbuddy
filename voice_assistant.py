@@ -21,7 +21,7 @@ SYSTEM_PROMPT = (
     "You are GymBuddy, a friendly voice workout coach. "
     "Reply in ONE short sentence. Be conversational. "
     "Use the live workout stats only if the user asks about them. "
-    "/no_think"
+    "Do not include hidden reasoning or <think> tags. /no_think"
 )
 
 WAKE_PATTERNS = [
@@ -35,14 +35,28 @@ EMOJI_RE       = re.compile(
 )
 
 _CMD_PATTERNS = [
-    (re.compile(r"\badd\s+(\d+)\s*(?:more\s+)?reps?\b", re.IGNORECASE),   "add_reps"),
-    (re.compile(r"\bset\s+(?:(?:the\s+)?target\s+(?:to\s+)?|it\s+to\s+)(\d+)\s*reps?\b", re.IGNORECASE), "set_target"),
-    (re.compile(r"\b(\d+)\s+(?:more\s+)?reps?\s*(?:please|now)?\b", re.IGNORECASE), "set_target"),
+    (re.compile(r"\b(?:add|at)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:more\s+)?(?:r[ae]ps?)?\b", re.IGNORECASE),   "add_reps"),
+    (re.compile(r"\bset\s+(?:(?:the\s+)?target\s+(?:to\s+)?|it\s+to\s+)(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*r[ae]ps?\b", re.IGNORECASE), "set_target"),
+    (re.compile(r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+more(?:\s+r[ae]ps?)?(?:\s+\w+)?\b", re.IGNORECASE), "add_reps"),
+    (re.compile(r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+r[ae]ps?\s*(?:please|now)?\b", re.IGNORECASE), "set_target"),
     (re.compile(r"\b(?:clear|remove|cancel)\s+(?:the\s+)?target\b", re.IGNORECASE), "clear_target"),
     (re.compile(r"\b(?:start|begin)\s+(?:the\s+)?(?:set|workout|session)\b", re.IGNORECASE), "start"),
     (re.compile(r"\b(?:stop|finish|end|done)\s*(?:the\s+)?(?:set|workout|session)?\b", re.IGNORECASE), "stop"),
     (re.compile(r"\breset\b", re.IGNORECASE), "reset"),
 ]
+
+NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
 
 
 def _strip_wake(text):
@@ -59,7 +73,8 @@ def _parse_command(text):
     for pattern, cmd in _CMD_PATTERNS:
         m = pattern.search(text)
         if m:
-            value = int(m.group(1)) if m.lastindex and m.group(1).isdigit() else 0
+            raw_value = m.group(1).lower() if m.lastindex else ""
+            value = int(raw_value) if raw_value.isdigit() else NUMBER_WORDS.get(raw_value, 0)
             return cmd, value
     return None
 
@@ -103,17 +118,25 @@ class VoiceAssistant:
         text = EMOJI_RE.sub("", text).strip()
         if not text:
             return None, None
-        resp = self.client.audio.speech.create(
-            model=GROQ_TTS_MODEL,
-            voice=GROQ_TTS_VOICE,
-            response_format="wav",
-            input=text,
-        )
-        buf = io.BytesIO(resp.content)
-        audio, sr = sf.read(buf, dtype="float32")
-        if audio.ndim > 1:
-            audio = audio[:, 0]
-        return audio, sr
+        try:
+            resp = self.client.audio.speech.create(
+                model=GROQ_TTS_MODEL,
+                voice=GROQ_TTS_VOICE,
+                response_format="wav",
+                input=text,
+            )
+            if hasattr(resp, "read"):
+                content = resp.read()
+            else:
+                content = getattr(resp, "content", resp)
+            buf = io.BytesIO(content)
+            audio, sr = sf.read(buf, dtype="float32")
+            if audio.ndim > 1:
+                audio = audio[:, 0]
+            return audio, sr
+        except Exception as e:
+            print(f"\n[voice] TTS error: {e}")
+            return None, None
 
     def _play(self, audio, sr):
         if audio is None:

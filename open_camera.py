@@ -13,6 +13,7 @@ from ultralytics import YOLO
 
 
 MODEL_NAME = "yolo26n-pose.pt"
+APP_VERSION = "GymBuddy standalone 2026-05-17 camera+tts-fix"
 POSE_CONFIDENCE = 0.35
 KEYPOINT_CONFIDENCE = 0.35
 
@@ -29,6 +30,9 @@ QWEN_LOCK = __import__("threading").Lock()
 COACH_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 GROQ_CLIENT = None
 GROQ_LLM_MODEL = "qwen/qwen3-32b"
+CAMERA_RETRY_SECONDS = 3.0
+CAMERA_MAX_READ_FAILURES = 30
+CAMERA_WARMUP_FRAMES = 12
 
 
 def groq_client():
@@ -41,6 +45,58 @@ def groq_client():
 
 def coach_model_path():
     return os.getenv("GYMBUDDY_GGUF") or os.getenv("GYMBUDDY_QWEN_GGUF")
+
+
+def camera_indexes():
+    raw_value = os.getenv("GYMBUDDY_CAMERA_INDEX", "auto").strip().lower()
+    if raw_value in ("", "auto"):
+        return [0, 1, 2]
+    try:
+        return [int(raw_value)]
+    except ValueError:
+        print(f"Invalid GYMBUDDY_CAMERA_INDEX={raw_value!r}; using auto camera scan.")
+        return [0, 1, 2]
+
+
+def _read_warmup_frame(camera):
+    for _ in range(CAMERA_WARMUP_FRAMES):
+        ok, frame = camera.read()
+        if ok and frame is not None and frame.size:
+            return frame
+        time.sleep(0.05)
+    return None
+
+
+def open_camera_device(index):
+    backends = []
+    if hasattr(cv2, "CAP_AVFOUNDATION"):
+        backends.append(("AVFoundation", cv2.CAP_AVFOUNDATION))
+    backends.append(("default", 0))
+
+    for name, backend in backends:
+        camera = cv2.VideoCapture(index, backend) if backend else cv2.VideoCapture(index)
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
+        if camera.isOpened():
+            first_frame = _read_warmup_frame(camera)
+            if first_frame is None:
+                print(f"Camera {index} opened with {name}, but did not return frames.")
+                camera.release()
+                continue
+            print(f"Camera {index} opened with {name}.")
+            return camera
+        camera.release()
+    return None
+
+
+def camera_help(indexes):
+    index_list = ", ".join(str(index) for index in indexes)
+    return (
+        f"Could not read from camera index(es): {index_list}. On macOS, enable Camera permission "
+        "for Terminal/Codex/Python in System Settings > Privacy & Security > Camera. "
+        "If OpenCV says out of bound, that camera index does not exist on this Mac. "
+        "If you pressed Ctrl+Z earlier, run: pkill -f open_camera.py"
+    )
 
 
 @dataclass
@@ -396,6 +452,7 @@ def draw_panel(frame, session, arm, fps, debug, llm_enabled):
         rep_str = f"{str(session.clean_reps).zfill(2)}/{session.rep_target}"
         done = session.clean_reps >= session.rep_target
         rep_color = (0, 255, 120) if done else (255, 255, 255)
+        cv2.putText(frame, f"TARGET {session.rep_target}", (36, 162), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 200), 2)
     else:
         rep_str = str(session.clean_reps).zfill(2)
         rep_color = (255, 255, 255)
@@ -591,7 +648,7 @@ def handle_voice_command(session, cmd, value=0):
     if cmd == "add_reps":
         session.rep_target = max(0, session.rep_target) + value
         msg = f"Done! Target is now {session.rep_target} reps."
-        session.voice_flash = f"TARGET +{value}  →  {session.rep_target}"
+        session.voice_flash = f"TARGET +{value} -> {session.rep_target}"
     elif cmd == "set_target":
         session.rep_target = value
         msg = f"Target set to {value} reps. Let's go!"
@@ -636,12 +693,17 @@ def print_set_review(session):
 
 def main():
     model = YOLO(MODEL_NAME)
-    camera = cv2.VideoCapture(0)
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
+    indexes = camera_indexes()
+    camera = None
+    active_index = indexes[0]
+    for candidate_index in indexes:
+        camera = open_camera_device(candidate_index)
+        if camera is not None:
+            active_index = candidate_index
+            break
 
-    if not camera.isOpened():
-        print("Could not open camera. Check camera permissions and try again.")
+    if camera is None:
+        print(camera_help(indexes))
         return
 
     session = CurlSession()
@@ -652,6 +714,7 @@ def main():
     llm_enabled = bool(os.getenv("GROQ_API_KEY") or coach_model_path())
 
     print("GymBuddy Curl Coach started.")
+    print(APP_VERSION)
     print("Press Space to start/stop a set. Press D for debug, R to reset, Q/Esc to quit.")
     if os.getenv("GROQ_API_KEY"):
         print("Groq cloud coaching enabled.")
@@ -674,11 +737,26 @@ def main():
             voice = None
 
     try:
+        read_failures = 0
+        last_camera_warning = 0.0
         while True:
             ok, frame = camera.read()
             if not ok:
-                print("Could not read from camera.")
-                break
+                read_failures += 1
+                now = time.time()
+                if now - last_camera_warning >= CAMERA_RETRY_SECONDS:
+                    print(camera_help([active_index]))
+                    last_camera_warning = now
+                if read_failures >= CAMERA_MAX_READ_FAILURES:
+                    camera.release()
+                    time.sleep(CAMERA_RETRY_SECONDS)
+                    camera = open_camera_device(active_index)
+                    read_failures = 0
+                    if camera is None:
+                        print(camera_help([active_index]))
+                        time.sleep(CAMERA_RETRY_SECONDS)
+                continue
+            read_failures = 0
 
             result = model.predict(frame, conf=POSE_CONFIDENCE, verbose=False)[0]
             arm = select_arm(result)
