@@ -7,8 +7,10 @@ Step-by-step guide to bring up the full 11-node graph from
 
 ## 1. Host requirements
 
-ROS 1 Noetic only runs cleanly on **Ubuntu 20.04** (or 20.04 inside WSL2 on
-Windows). The rest of this guide assumes you're on that.
+ROS 1 Noetic runs most cleanly on **Ubuntu 20.04** (or 20.04 inside WSL2 on
+Windows). On macOS, use RoboStack/Miniforge and the macOS command variants
+below; this is useful for development, but final robot testing should still
+happen on the robot's Linux ROS environment.
 
 | Need              | How to check / install                                                |
 | ----------------- | --------------------------------------------------------------------- |
@@ -23,6 +25,18 @@ If you're on **WSL2**, USB webcams and audio require extra setup — usbipd-win
 for the camera and PulseAudio forwarding for mic/speakers. Native Ubuntu is
 much easier for a first run.
 
+### macOS / RoboStack
+
+If you installed Noetic with RoboStack:
+
+```bash
+mamba activate ros_env
+```
+
+Use `source ~/catkin_ws/devel/setup.zsh` instead of the Ubuntu
+`source /opt/ros/noetic/setup.bash` line. Camera and microphone access are
+controlled by macOS Privacy settings for the app running ROS.
+
 ---
 
 ## 2. Create a catkin workspace and link the package
@@ -32,8 +46,9 @@ If you don't already have one:
 ```bash
 mkdir -p ~/catkin_ws/src
 cd ~/catkin_ws
-catkin_make
-source devel/setup.bash
+catkin_make -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+source devel/setup.bash   # Ubuntu/Linux bash
+# or: source devel/setup.zsh   # macOS/zsh
 ```
 
 Symlink this repo's package into your workspace:
@@ -50,8 +65,9 @@ ln -s ~/path/to/gymbuddy/gymbuddy_ros ~/catkin_ws/src/gymbuddy_ros
 
 ```bash
 cd ~/catkin_ws
-catkin_make
-source devel/setup.bash
+catkin_make -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+source devel/setup.bash   # Ubuntu/Linux bash
+# or: source devel/setup.zsh   # macOS/zsh
 ```
 
 You should see lines like:
@@ -119,11 +135,25 @@ source ~/catkin_ws/devel/setup.bash
 roslaunch gymbuddy_ros gymbuddy.launch
 ```
 
+On macOS/RoboStack:
+
+```bash
+mamba activate ros_env
+source ~/catkin_ws/devel/setup.zsh
+roslaunch gymbuddy_ros gymbuddy.launch
+```
+
 Useful arguments:
 
 ```bash
 # pick a different camera and a 12-rep target
 roslaunch gymbuddy_ros gymbuddy.launch camera_device:=1 initial_target:=12
+
+# test the full form/count/coach pipeline without a camera
+roslaunch gymbuddy_ros gymbuddy.launch use_camera:=false use_sim_skeleton:=true initial_target:=3
+
+# avoid microphone/speaker nodes while debugging vision
+roslaunch gymbuddy_ros gymbuddy.launch use_voice:=false use_tts:=false
 ```
 
 You should see each node log a "ready" line. The first launch will be slow
@@ -138,6 +168,13 @@ In a second terminal (always re-source first):
 ```bash
 source /opt/ros/noetic/setup.bash
 source ~/catkin_ws/devel/setup.bash
+```
+
+On macOS/RoboStack:
+
+```bash
+mamba activate ros_env
+source ~/catkin_ws/devel/setup.zsh
 ```
 
 List the running nodes and topics:
@@ -232,6 +269,13 @@ You didn't `source devel/setup.bash` in the terminal you're using.
 **`rostopic list` doesn't show `/raw_camera_frame`**
 The camera node failed silently. Run it standalone (`rosrun gymbuddy_ros
 camera_input_node.py`) and read its output.
+
+On macOS, if you see `OpenCV: not authorized to capture video`, enable Camera
+permission for Terminal/Codex in System Settings, then rerun the launch command.
+
+**Need to test without camera access**
+Use the simulator:
+`roslaunch gymbuddy_ros gymbuddy.launch use_camera:=false use_sim_skeleton:=true`.
 
 **MediaPipe install fails on Python 3.10+**
 MediaPipe wheels are picky. Use Python 3.8 or 3.9 (Ubuntu 20.04 default).

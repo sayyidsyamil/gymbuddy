@@ -13,9 +13,9 @@ LEFT_ARM = {"name": "left", "shoulder": 11, "elbow": 13, "wrist": 15}
 RIGHT_ARM = {"name": "right", "shoulder": 12, "elbow": 14, "wrist": 16}
 
 EXTENDED_ANGLE = 155.0
-TOP_ANGLE = 70.0
-PARTIAL_TOP_ANGLE = 100.0
-MIN_VISIBILITY = 0.5
+TOP_ANGLE = 90.0
+PARTIAL_TOP_ANGLE = 120.0
+MIN_VISIBILITY = 0.35
 
 
 def angle_between(a, b, c):
@@ -30,6 +30,10 @@ def angle_between(a, b, c):
 
 class FormAnalysisNode:
     def __init__(self):
+        self.extended_angle = float(rospy.get_param("~extended_angle", EXTENDED_ANGLE))
+        self.top_angle = float(rospy.get_param("~top_angle", TOP_ANGLE))
+        self.partial_top_angle = float(rospy.get_param("~partial_top_angle", PARTIAL_TOP_ANGLE))
+        self.min_visibility = float(rospy.get_param("~min_visibility", MIN_VISIBILITY))
         self.pub = rospy.Publisher("/form_status", FormStatus, queue_size=4)
         rospy.Subscriber("/skeleton_data", Skeleton, self.on_skeleton, queue_size=2)
         self.last_status = None
@@ -45,7 +49,7 @@ class FormAnalysisNode:
             e = skel.landmarks[arm["elbow"]]
             w = skel.landmarks[arm["wrist"]]
             visibility = (s.visibility + e.visibility + w.visibility) / 3.0
-            if visibility < MIN_VISIBILITY:
+            if visibility < self.min_visibility:
                 continue
             shoulder = np.array([s.x * skel.image_width, s.y * skel.image_height])
             elbow = np.array([e.x * skel.image_width, e.y * skel.image_height])
@@ -60,11 +64,11 @@ class FormAnalysisNode:
         return max(candidates, key=lambda a: a["confidence"])
 
     def classify(self, angle: float):
-        if angle <= TOP_ANGLE:
+        if angle <= self.top_angle:
             return "depth_reached", "elbow at top of curl"
-        if angle <= PARTIAL_TOP_ANGLE:
+        if angle <= self.partial_top_angle:
             return "near_top", "almost at full curl"
-        if angle >= EXTENDED_ANGLE:
+        if angle >= self.extended_angle:
             return "fully_extended", "ready position"
         return "mid_range", "in motion"
 

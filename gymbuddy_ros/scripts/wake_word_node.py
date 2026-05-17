@@ -24,7 +24,7 @@ class WakeWordNode:
         self.pub.publish(Bool(data=False))
 
         rospy.loginfo("wake_word_node loading openwakeword model: %s", self.wake_model_name)
-        self.model = Model(wakeword_models=[self.wake_model_name])
+        self.model = Model(wakeword_models=[self.wake_model_name], inference_framework="onnx")
 
         self._cooldown_until = rospy.Time(0)
         self._lock = threading.Lock()

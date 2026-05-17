@@ -28,6 +28,7 @@ catkin_package(
 
 catkin_install_python(PROGRAMS
   scripts/camera_input_node.py
+  scripts/sim_skeleton_node.py
   scripts/pose_detection_node.py
   scripts/form_analysis_node.py
   scripts/rep_counter_node.py

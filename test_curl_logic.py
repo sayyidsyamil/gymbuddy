@@ -30,8 +30,8 @@ class CurlSessionTest(unittest.TestCase):
         session.update(arm_with_angle(165))
         session.update(arm_with_angle(120))
         session.rep_started_at -= 1.2
-        session.update(arm_with_angle(60))
-        session.update(arm_with_angle(90))
+        session.update(arm_with_angle(85))
+        session.update(arm_with_angle(110))
         session.update(arm_with_angle(165))
 
         self.assertEqual(session.clean_reps, 1)
@@ -45,7 +45,7 @@ class CurlSessionTest(unittest.TestCase):
         session.update(arm_with_angle(165))
         session.update(arm_with_angle(120))
         session.rep_started_at -= 1.2
-        session.update(arm_with_angle(90))
+        session.update(arm_with_angle(110))
         session.update(arm_with_angle(165))
 
         self.assertEqual(session.clean_reps, 0)
@@ -58,8 +58,8 @@ class CurlSessionTest(unittest.TestCase):
 
         session.update(arm_with_angle(165))
         session.update(arm_with_angle(120))
-        session.update(arm_with_angle(60))
-        session.update(arm_with_angle(90))
+        session.update(arm_with_angle(85))
+        session.update(arm_with_angle(110))
         session.update(arm_with_angle(165))
 
         self.assertEqual(session.clean_reps, 0)

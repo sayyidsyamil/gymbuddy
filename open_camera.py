@@ -3,6 +3,7 @@ import math
 import os
 import time
 from collections import Counter
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -17,13 +18,19 @@ KEYPOINT_CONFIDENCE = 0.35
 
 EXTENDED_ANGLE = 155
 CURLING_ANGLE = 135
-TOP_ANGLE = 70
-PARTIAL_TOP_ANGLE = 100
-FAST_REP_SECONDS = 1.0
+TOP_ANGLE = 90
+PARTIAL_TOP_ANGLE = 120
+FAST_REP_SECONDS = 0.6
 
 LEFT_ARM = {"name": "left", "shoulder": 5, "elbow": 7, "wrist": 9}
 RIGHT_ARM = {"name": "right", "shoulder": 6, "elbow": 8, "wrist": 10}
 QWEN_MODEL = None
+QWEN_LOCK = __import__("threading").Lock()
+COACH_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+
+def coach_model_path():
+    return os.getenv("GYMBUDDY_GGUF") or os.getenv("GYMBUDDY_QWEN_GGUF")
 
 
 @dataclass
@@ -56,6 +63,8 @@ class CurlSession:
     reps: List[RepAttempt] = field(default_factory=list)
     state: str = "ready"
     cue: str = "Press Space to start"
+    coach_tip: str = "Start a set for live coaching"
+    last_coached_attempt: int = 0
     rep_started_at: Optional[float] = None
     rep_start_elbow: Optional[np.ndarray] = None
     min_angle: float = 180.0
@@ -72,6 +81,8 @@ class CurlSession:
         self.reps.clear()
         self.state = "ready"
         self.cue = "Find full extension"
+        self.coach_tip = "Extend fully, then curl to shoulder height"
+        self.last_coached_attempt = 0
         self._reset_rep_trackers()
 
     def stop(self):
@@ -93,11 +104,13 @@ class CurlSession:
 
         if arm is None:
             self.cue = "Arm not visible"
+            self.coach_tip = "Move so shoulder, elbow, and wrist are visible"
             self.perception_warnings["arm_not_visible"] += 1
             return
 
         if arm.confidence < KEYPOINT_CONFIDENCE:
             self.cue = "Low confidence"
+            self.coach_tip = "Turn sideways and keep the working arm in frame"
             self.perception_warnings["low_confidence"] += 1
             return
 
@@ -111,26 +124,32 @@ class CurlSession:
         if self.state == "ready":
             if angle >= EXTENDED_ANGLE:
                 self.cue = "Ready"
+                self.coach_tip = "Curl up smoothly when ready"
             elif angle < CURLING_ANGLE:
                 self._begin_rep(arm)
                 self.state = "curling"
                 self.cue = "Curl higher"
+                self.coach_tip = "Bring your wrist closer to shoulder height"
 
         elif self.state == "curling":
             if angle <= TOP_ANGLE:
                 self.saw_top = True
                 self.state = "top"
                 self.cue = "Control down"
+                self.coach_tip = "Good height. Lower slowly to full extension"
             elif angle <= PARTIAL_TOP_ANGLE:
                 self.saw_partial = True
                 self.cue = "Almost there"
+                self.coach_tip = "A little higher before lowering"
             else:
                 self.cue = "Curl higher"
+                self.coach_tip = "Keep elbow planted and curl through the full range"
 
         elif self.state == "top":
             if angle > TOP_ANGLE + 15:
                 self.state = "lowering"
                 self.cue = "Full extension"
+                self.coach_tip = "Lower until your arm is nearly straight"
 
         elif self.state == "lowering":
             if angle >= EXTENDED_ANGLE:
@@ -139,6 +158,7 @@ class CurlSession:
                 self._finish_rep(arm, finished_with_full_extension=False)
             elif angle >= CURLING_ANGLE:
                 self.cue = "Extend lower"
+                self.coach_tip = "Finish the rep by fully extending at the bottom"
 
         if self.state == "curling" and self.rep_started_at is not None:
             if angle >= EXTENDED_ANGLE and (self.saw_partial or self.min_angle < CURLING_ANGLE):
@@ -177,8 +197,10 @@ class CurlSession:
         if clean:
             self.clean_reps += 1
             self.cue = "Rep counted"
+            self.coach_tip = "Clean rep. Keep that same tempo"
         else:
             self.cue = cue_for_issues(issues)
+            self.coach_tip = fallback_rep_coach(issues, duration, self.min_angle, self.max_elbow_drift)
 
         self.reps.append(
             RepAttempt(
@@ -228,6 +250,39 @@ def cue_for_issues(issues):
     if "too_fast" in issues:
         return "Slow down"
     return "Try again"
+
+
+def fallback_rep_coach(issues, duration_seconds, min_angle, max_elbow_drift):
+    if not issues:
+        return "Clean rep. Keep that same tempo"
+    if "partial_curl" in issues:
+        return f"Curl higher before lowering. Best angle was {min_angle:.0f} deg"
+    if "incomplete_extension" in issues:
+        return "Return to a nearly straight arm before the next curl"
+    if "elbow_drift" in issues:
+        return f"Keep your elbow fixed. It drifted {max_elbow_drift:.0f}px"
+    if "too_fast" in issues:
+        return f"Slow down. That rep took {duration_seconds:.1f}s"
+    return "Reset your arm and try one controlled full rep"
+
+
+def rep_payload(session):
+    if not session.reps:
+        return None
+    rep = session.reps[-1]
+    return {
+        "exercise": "one_arm_bicep_curl",
+        "clean_reps": session.clean_reps,
+        "total_attempts": session.total_attempts,
+        "latest_rep": {
+            "number": rep.number,
+            "clean": rep.clean,
+            "duration_seconds": rep.duration_seconds,
+            "min_angle": rep.min_angle,
+            "max_elbow_drift": rep.max_elbow_drift,
+            "issues": rep.issues,
+        },
+    }
 
 
 def angle_between(a, b, c):
@@ -291,7 +346,25 @@ def draw_arm(frame, arm):
         cv2.circle(frame, tuple(point.astype(int)), 7, (0, 255, 120), -1)
 
 
-def draw_panel(frame, session, arm, fps, debug):
+def put_wrapped_text(frame, text, origin, max_width, color, scale=0.55, thickness=1, line_gap=22):
+    x, y = origin
+    words = text.split()
+    line = ""
+    for word in words:
+        candidate = word if not line else f"{line} {word}"
+        (line_width, _), _ = cv2.getTextSize(candidate, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+        if line and line_width > max_width:
+            cv2.putText(frame, line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
+            y += line_gap
+            line = word
+        else:
+            line = candidate
+    if line:
+        cv2.putText(frame, line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
+    return y
+
+
+def draw_panel(frame, session, arm, fps, debug, llm_enabled):
     height, width = frame.shape[:2]
     panel_w = 390
     overlay = frame.copy()
@@ -308,9 +381,12 @@ def draw_panel(frame, session, arm, fps, debug):
 
     cv2.putText(frame, str(session.clean_reps).zfill(2), (30, 230), cv2.FONT_HERSHEY_SIMPLEX, 3.2, (255, 255, 255), 7)
     cv2.putText(frame, "CLEAN REPS", (36, 268), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (190, 190, 190), 2)
+    cv2.putText(frame, f"ATTEMPTS {session.total_attempts}", (38, 298), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (190, 190, 190), 2)
 
     cue_color = (0, 255, 120) if session.cue in ("Ready", "Rep counted", "Set complete") else (0, 220, 255)
     cv2.putText(frame, session.cue.upper(), (30, 335), cv2.FONT_HERSHEY_SIMPLEX, 0.72, cue_color, 2)
+    cv2.putText(frame, "AI COACH", (30, 380), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 210, 255), 1)
+    put_wrapped_text(frame, session.coach_tip, (30, 410), panel_w - 60, (245, 245, 245), scale=0.55, thickness=1)
 
     help_lines = [
         "Space: start/stop",
@@ -325,12 +401,15 @@ def draw_panel(frame, session, arm, fps, debug):
         angle = "--" if arm is None else f"{arm.angle:.1f}"
         conf = "--" if arm is None else f"{arm.confidence:.2f}"
         side = "--" if arm is None else arm.side
+        min_angle = "--" if session.min_angle == 180.0 else f"{session.min_angle:.1f}"
         debug_lines = [
             f"state: {session.state}",
             f"arm: {side}",
             f"elbow angle: {angle}",
+            f"min angle: {min_angle}",
             f"confidence: {conf}",
             f"attempts: {session.total_attempts}",
+            f"llm: {'on' if llm_enabled else 'fallback'}",
             f"fps: {fps:.1f}",
         ]
         for i, line in enumerate(debug_lines):
@@ -367,7 +446,7 @@ def fallback_coach(summary, question=None):
 
 def qwen_coach(summary, question=None):
     global QWEN_MODEL
-    model_path = os.getenv("GYMBUDDY_QWEN_GGUF")
+    model_path = coach_model_path()
     if not model_path:
         return fallback_coach(summary, question)
 
@@ -387,11 +466,122 @@ def qwen_coach(summary, question=None):
     else:
         prompt += "Coach summary:"
 
-    if QWEN_MODEL is None:
-        QWEN_MODEL = Llama(model_path=model_path, n_ctx=4096, verbose=False)
-
-    result = QWEN_MODEL(prompt, max_tokens=140, temperature=0.4, stop=["\n\n"])
+    with QWEN_LOCK:
+        if QWEN_MODEL is None:
+            QWEN_MODEL = Llama(model_path=model_path, n_ctx=4096, verbose=False)
+        result = QWEN_MODEL(prompt, max_tokens=140, temperature=0.4, stop=["\n\n"])
     return result["choices"][0]["text"].strip()
+
+
+def qwen_live_coach(payload):
+    model_path = coach_model_path()
+    if not model_path:
+        rep = payload["latest_rep"]
+        return fallback_rep_coach(
+            rep["issues"],
+            rep["duration_seconds"],
+            rep["min_angle"],
+            rep["max_elbow_drift"],
+        )
+
+    try:
+        from llama_cpp import Llama
+    except ImportError:
+        rep = payload["latest_rep"]
+        return fallback_rep_coach(
+            rep["issues"],
+            rep["duration_seconds"],
+            rep["min_angle"],
+            rep["max_elbow_drift"],
+        )
+
+    global QWEN_MODEL
+    prompt = (
+        "You are GymBuddy, a live bicep curl coach. Use only the measured JSON. "
+        "Give one short correction for the next rep. Do not mention JSON, sensors, "
+        "injuries, or anything unmeasured. Keep it under 14 words.\n\n"
+        f"Measured rep:\n{json.dumps(payload, indent=2)}\n\n"
+        "Next-rep cue:"
+    )
+    with QWEN_LOCK:
+        if QWEN_MODEL is None:
+            QWEN_MODEL = Llama(model_path=model_path, n_ctx=2048, verbose=False)
+        result = QWEN_MODEL(prompt, max_tokens=32, temperature=0.2, stop=["\n", ". "])
+    text = result["choices"][0]["text"].strip().strip('"')
+    return text or "Reset and try one controlled full rep"
+
+
+def submit_live_coach(session, future):
+    if session.total_attempts == 0 or session.last_coached_attempt == session.total_attempts:
+        return future
+    if future is not None and not future.done():
+        return future
+
+    payload = rep_payload(session)
+    if payload is None:
+        return future
+
+    session.last_coached_attempt = session.total_attempts
+    if coach_model_path():
+        session.coach_tip = "AI coach is reading that rep..."
+        return COACH_EXECUTOR.submit(qwen_live_coach, payload)
+
+    rep = payload["latest_rep"]
+    session.coach_tip = fallback_rep_coach(
+        rep["issues"],
+        rep["duration_seconds"],
+        rep["min_angle"],
+        rep["max_elbow_drift"],
+    )
+    return None
+
+
+def collect_live_coach(session, future):
+    if future is None or not future.done():
+        return future
+    try:
+        session.coach_tip = future.result()
+    except Exception as exc:
+        session.coach_tip = f"LLM unavailable: {exc.__class__.__name__}. Using form cues."
+    return None
+
+
+def stream_llm(prompt, max_tokens=80, temperature=0.7):
+    """Stream tokens from the loaded GGUF. Used by the voice assistant."""
+    global QWEN_MODEL
+    model_path = coach_model_path()
+    if not model_path:
+        yield "LLM is not configured."
+        return
+    try:
+        from llama_cpp import Llama
+    except ImportError:
+        yield "llama-cpp-python is not installed."
+        return
+    with QWEN_LOCK:
+        if QWEN_MODEL is None:
+            QWEN_MODEL = Llama(model_path=model_path, n_ctx=4096, verbose=False)
+        for chunk in QWEN_MODEL(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=["<end_of_turn>", "<start_of_turn>"],
+            stream=True,
+        ):
+            text = chunk["choices"][0]["text"]
+            if text:
+                yield text
+
+
+def session_context(session):
+    parts = [
+        f"clean_reps: {session.clean_reps}",
+        f"total_attempts: {session.total_attempts}",
+        f"state: {session.state}",
+        f"current cue: {session.cue}",
+        f"current tip: {session.coach_tip}",
+    ]
+    return "\n".join(parts)
 
 
 def print_set_review(session):
@@ -422,9 +612,28 @@ def main():
     debug = True
     last_time = time.time()
     fps = 0.0
+    coach_future: Optional[Future] = None
+    llm_enabled = bool(coach_model_path())
 
     print("GymBuddy Curl Coach started.")
     print("Press Space to start/stop a set. Press D for debug, R to reset, Q/Esc to quit.")
+    if llm_enabled:
+        print("Live LLM coaching enabled through GYMBUDDY_GGUF.")
+    else:
+        print("Live coaching is using fallback rules. Set GYMBUDDY_GGUF for local LLM guidance.")
+
+    voice = None
+    if llm_enabled and os.getenv("GYMBUDDY_VOICE", "1") != "0":
+        try:
+            from voice_assistant import VoiceAssistant
+            voice = VoiceAssistant(
+                llm_call=lambda p: stream_llm(p, max_tokens=80, temperature=0.7),
+                get_context=lambda: session_context(session),
+            )
+            voice.start()
+        except Exception as exc:
+            print(f"Voice assistant failed to start: {exc}")
+            voice = None
 
     try:
         while True:
@@ -436,6 +645,8 @@ def main():
             result = model.predict(frame, conf=POSE_CONFIDENCE, verbose=False)[0]
             arm = select_arm(result)
             session.update(arm)
+            coach_future = collect_live_coach(session, coach_future)
+            coach_future = submit_live_coach(session, coach_future)
 
             now = time.time()
             fps = 0.9 * fps + 0.1 * (1.0 / max(now - last_time, 0.001))
@@ -443,7 +654,7 @@ def main():
 
             annotated_frame = frame.copy()
             draw_arm(annotated_frame, arm)
-            draw_panel(annotated_frame, session, arm, fps, debug)
+            draw_panel(annotated_frame, session, arm, fps, debug, llm_enabled)
 
             cv2.imshow("GymBuddy Curl Coach", annotated_frame)
 
@@ -454,6 +665,7 @@ def main():
                 debug = not debug
             if key == ord("r"):
                 session = CurlSession()
+                coach_future = None
             if key == 32:
                 if session.active:
                     session.stop()
@@ -461,8 +673,11 @@ def main():
                 else:
                     session.start()
     finally:
+        if voice is not None:
+            voice.stop()
         camera.release()
         cv2.destroyAllWindows()
+        COACH_EXECUTOR.shutdown(wait=False, cancel_futures=True)
 
 
 if __name__ == "__main__":

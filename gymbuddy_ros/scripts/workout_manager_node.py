@@ -14,8 +14,9 @@ class WorkoutManagerNode:
         self.set_active = False
         self.history = []  # list of completed-set summaries
 
-        self.coach_pub = rospy.Publisher("/coaching_output", String, queue_size=4)
-        self.stats_pub = rospy.Publisher("/workout_stats", WorkoutStats, queue_size=4)
+        self.coach_pub = rospy.Publisher("/coaching_output", String, queue_size=4, latch=True)
+        self.stats_pub = rospy.Publisher("/workout_stats", WorkoutStats, queue_size=4, latch=True)
+        self.intent_pub = rospy.Publisher("/intent_update", IntentUpdate, queue_size=4)
 
         rospy.Subscriber("/workout_stats", WorkoutStats, self.on_stats, queue_size=4)
         rospy.Subscriber("/intent_update", IntentUpdate, self.on_intent, queue_size=4)
@@ -53,6 +54,12 @@ class WorkoutManagerNode:
             self.coach_pub.publish(
                 String(data=f"Target hit: {msg.clean_reps} of {msg.total_attempts}. Set complete.")
             )
+            stop = IntentUpdate()
+            stop.header.stamp = rospy.Time.now()
+            stop.action = "stop_set"
+            stop.value = 0
+            stop.text = "target hit"
+            self.intent_pub.publish(stop)
 
         # Re-emit stats annotated with the manager's target so consumers see the goal.
         out = WorkoutStats()
