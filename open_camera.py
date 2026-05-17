@@ -27,6 +27,16 @@ RIGHT_ARM = {"name": "right", "shoulder": 6, "elbow": 8, "wrist": 10}
 QWEN_MODEL = None
 QWEN_LOCK = __import__("threading").Lock()
 COACH_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+GROQ_CLIENT = None
+GROQ_LLM_MODEL = "qwen/qwen3-32b"
+
+
+def groq_client():
+    global GROQ_CLIENT
+    if GROQ_CLIENT is None:
+        from groq import Groq
+        GROQ_CLIENT = Groq()
+    return GROQ_CLIENT
 
 
 def coach_model_path():
@@ -458,70 +468,62 @@ def fallback_coach(summary, question=None):
 
 
 def qwen_coach(summary, question=None):
-    global QWEN_MODEL
-    model_path = coach_model_path()
-    if not model_path:
+    if not os.getenv("GROQ_API_KEY") and not coach_model_path():
         return fallback_coach(summary, question)
 
+    sys_msg = (
+        "You are GymBuddy, a quiet robotic fitness coach. Use only the measured JSON data. "
+        "Do not invent injuries, weights, or hidden details. Give concise coaching: what went well, "
+        "main issue, and one next-set correction. /no_think"
+    )
+    user_msg = f"Session JSON:\n{json.dumps(summary, indent=2)}\n\n"
+    user_msg += f"User question: {question}\nAnswer in one sentence." if question else "Coach summary:"
+
+    if os.getenv("GROQ_API_KEY"):
+        return groq_coach([{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}])
+
+    # llama.cpp fallback
+    global QWEN_MODEL
     try:
         from llama_cpp import Llama
     except ImportError:
         return fallback_coach(summary, question)
-
-    prompt = (
-        "You are GymBuddy, a quiet robotic fitness coach. Use only the measured JSON data. "
-        "Do not invent injuries, weights, or hidden details. Give concise coaching: what went well, "
-        "main issue, and one next-set correction.\n\n"
-        f"Session JSON:\n{json.dumps(summary, indent=2)}\n\n"
-    )
-    if question:
-        prompt += f"User question: {question}\nAnswer:"
-    else:
-        prompt += "Coach summary:"
-
     with QWEN_LOCK:
         if QWEN_MODEL is None:
-            QWEN_MODEL = Llama(model_path=model_path, n_ctx=4096, verbose=False)
-        result = QWEN_MODEL(prompt, max_tokens=140, temperature=0.4, stop=["\n\n"])
+            QWEN_MODEL = Llama(model_path=coach_model_path(), n_ctx=4096, verbose=False)
+        result = QWEN_MODEL(sys_msg + "\n\n" + user_msg, max_tokens=140, temperature=0.4, stop=["\n\n"])
     return result["choices"][0]["text"].strip()
 
 
 def qwen_live_coach(payload):
-    model_path = coach_model_path()
-    if not model_path:
-        rep = payload["latest_rep"]
-        return fallback_rep_coach(
-            rep["issues"],
-            rep["duration_seconds"],
-            rep["min_angle"],
-            rep["max_elbow_drift"],
-        )
+    rep = payload["latest_rep"]
+    if not os.getenv("GROQ_API_KEY") and not coach_model_path():
+        return fallback_rep_coach(rep["issues"], rep["duration_seconds"], rep["min_angle"], rep["max_elbow_drift"])
 
+    sys_msg = (
+        "You are GymBuddy, a live bicep curl coach. Use only the measured JSON. "
+        "Give ONE correction under 12 words. No JSON/sensor mentions. /no_think"
+    )
+    user_msg = f"Rep data:\n{json.dumps(payload, indent=2)}\nNext-rep cue:"
+
+    if os.getenv("GROQ_API_KEY"):
+        text = groq_coach(
+            [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}],
+            max_tokens=32, temperature=0.2,
+        )
+        return text.strip('"') or "Reset and try one controlled full rep"
+
+    # llama.cpp fallback
+    global QWEN_MODEL
     try:
         from llama_cpp import Llama
     except ImportError:
-        rep = payload["latest_rep"]
-        return fallback_rep_coach(
-            rep["issues"],
-            rep["duration_seconds"],
-            rep["min_angle"],
-            rep["max_elbow_drift"],
-        )
-
-    global QWEN_MODEL
-    prompt = (
-        "You are GymBuddy, a live bicep curl coach. Use only the measured JSON. "
-        "Give one short correction for the next rep. Do not mention JSON, sensors, "
-        "injuries, or anything unmeasured. Keep it under 14 words.\n\n"
-        f"Measured rep:\n{json.dumps(payload, indent=2)}\n\n"
-        "Next-rep cue:"
-    )
+        return fallback_rep_coach(rep["issues"], rep["duration_seconds"], rep["min_angle"], rep["max_elbow_drift"])
     with QWEN_LOCK:
         if QWEN_MODEL is None:
-            QWEN_MODEL = Llama(model_path=model_path, n_ctx=2048, verbose=False)
-        result = QWEN_MODEL(prompt, max_tokens=32, temperature=0.2, stop=["\n", ". "])
-    text = result["choices"][0]["text"].strip().strip('"')
-    return text or "Reset and try one controlled full rep"
+            QWEN_MODEL = Llama(model_path=coach_model_path(), n_ctx=2048, verbose=False)
+        result = QWEN_MODEL(sys_msg + "\n\n" + user_msg, max_tokens=32, temperature=0.2, stop=["\n", ". "])
+    return result["choices"][0]["text"].strip().strip('"') or "Reset and try one controlled full rep"
 
 
 def submit_live_coach(session, future):
@@ -559,31 +561,16 @@ def collect_live_coach(session, future):
     return None
 
 
-def stream_llm(prompt, max_tokens=80, temperature=0.7):
-    """Stream tokens from the loaded GGUF. Used by the voice assistant."""
-    global QWEN_MODEL
-    model_path = coach_model_path()
-    if not model_path:
-        yield "LLM is not configured."
-        return
-    try:
-        from llama_cpp import Llama
-    except ImportError:
-        yield "llama-cpp-python is not installed."
-        return
-    with QWEN_LOCK:
-        if QWEN_MODEL is None:
-            QWEN_MODEL = Llama(model_path=model_path, n_ctx=4096, verbose=False)
-        for chunk in QWEN_MODEL(
-            prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stop=["<end_of_turn>", "<start_of_turn>"],
-            stream=True,
-        ):
-            text = chunk["choices"][0]["text"]
-            if text:
-                yield text
+def groq_coach(messages, max_tokens=140, temperature=0.4):
+    """Blocking Groq call for set-review coaching."""
+    resp = groq_client().chat.completions.create(
+        model=GROQ_LLM_MODEL,
+        messages=messages,
+        temperature=temperature,
+        max_completion_tokens=max_tokens,
+        stream=False,
+    )
+    return (resp.choices[0].message.content or "").strip()
 
 
 def session_context(session):
@@ -662,21 +649,22 @@ def main():
     last_time = time.time()
     fps = 0.0
     coach_future: Optional[Future] = None
-    llm_enabled = bool(coach_model_path())
+    llm_enabled = bool(os.getenv("GROQ_API_KEY") or coach_model_path())
 
     print("GymBuddy Curl Coach started.")
     print("Press Space to start/stop a set. Press D for debug, R to reset, Q/Esc to quit.")
-    if llm_enabled:
+    if os.getenv("GROQ_API_KEY"):
+        print("Groq cloud coaching enabled.")
+    elif coach_model_path():
         print("Live LLM coaching enabled through GYMBUDDY_GGUF.")
     else:
-        print("Live coaching is using fallback rules. Set GYMBUDDY_GGUF for local LLM guidance.")
+        print("Live coaching is using fallback rules. Set GROQ_API_KEY or GYMBUDDY_GGUF.")
 
     voice = None
-    if llm_enabled and os.getenv("GYMBUDDY_VOICE", "1") != "0":
+    if os.getenv("GROQ_API_KEY") and os.getenv("GYMBUDDY_VOICE", "1") != "0":
         try:
             from voice_assistant import VoiceAssistant
             voice = VoiceAssistant(
-                llm_call=lambda p: stream_llm(p, max_tokens=80, temperature=0.7),
                 get_context=lambda: session_context(session),
                 on_command=lambda cmd, value=0: handle_voice_command(session, cmd, value),
             )

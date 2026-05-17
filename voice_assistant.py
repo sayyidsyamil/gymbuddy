@@ -1,31 +1,36 @@
-"""Voice assistant for GymBuddy. Wake word + voice-to-voice using the loaded GGUF."""
-import warnings, queue, tempfile, os, threading, re, time
+"""Voice assistant for GymBuddy — Groq cloud STT + LLM + TTS."""
+import warnings, queue, tempfile, os, threading, re, time, io
 warnings.filterwarnings("ignore")
 
 import sounddevice as sd
 import soundfile as sf
 import numpy as np
+from groq import Groq
 
 SAMPLE_RATE = 16000
 SILENCE_THRESHOLD = 0.01
 SILENCE_DURATION = 0.6
 MIN_SPEECH = 0.4
+
+GROQ_STT_MODEL   = "whisper-large-v3-turbo"
+GROQ_LLM_MODEL   = "qwen/qwen3-32b"
+GROQ_TTS_MODEL   = "canopylabs/orpheus-v1-english"
+GROQ_TTS_VOICE   = "autumn"
+
 SYSTEM_PROMPT = (
-    "You are GymBuddy, a friendly voice workout coach. Reply in ONE short sentence. "
-    "Be conversational. Use the live workout stats only if the user asks about them."
+    "You are GymBuddy, a friendly voice workout coach. "
+    "Reply in ONE short sentence. Be conversational. "
+    "Use the live workout stats only if the user asks about them. "
+    "/no_think"
 )
-MAX_TOKENS = 80
-VOICE = "af_heart"
-TTS_MODEL_NAME = "mlx-community/Kokoro-82M-bf16"
-STT_MODEL_NAME = "mlx-community/parakeet-tdt-0.6b-v3"
 
 WAKE_PATTERNS = [
     re.compile(r"\bhey\s+buddy\b", re.IGNORECASE),
-    re.compile(r"\bbuddy\b", re.IGNORECASE),
+    re.compile(r"\bbuddy\b",       re.IGNORECASE),
 ]
 ACTIVE_TIMEOUT = 30.0
-SENTENCE_END = re.compile(r"[.!?\n]")
-EMOJI_RE = re.compile(
+SENTENCE_END   = re.compile(r"[.!?\n]")
+EMOJI_RE       = re.compile(
     "[" "\U0001F300-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F000-\U0001F2FF" "]+"
 )
 
@@ -40,16 +45,6 @@ _CMD_PATTERNS = [
 ]
 
 
-def _parse_command(text):
-    """Return (cmd, value) if text matches a workout command, else None."""
-    for pattern, cmd in _CMD_PATTERNS:
-        m = pattern.search(text)
-        if m:
-            value = int(m.group(1)) if m.lastindex and m.group(1).isdigit() else 0
-            return cmd, value
-    return None
-
-
 def _strip_wake(text):
     for pat in WAKE_PATTERNS:
         text = pat.sub("", text, count=1)
@@ -60,116 +55,137 @@ def _has_wake(text):
     return any(pat.search(text) for pat in WAKE_PATTERNS)
 
 
+def _parse_command(text):
+    for pattern, cmd in _CMD_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            value = int(m.group(1)) if m.lastindex and m.group(1).isdigit() else 0
+            return cmd, value
+    return None
+
+
 class VoiceAssistant:
-    def __init__(self, llm_call, get_context=None, on_command=None):
+    def __init__(self, get_context=None, on_command=None):
         """
-        llm_call:   callable(prompt: str) -> Iterator[str]  (yields token deltas)
-        get_context: optional callable() -> str  (returns live workout stats string)
-        on_command: optional callable(cmd: str, value: int) -> str  (mutates session, returns reply)
+        get_context: optional callable() -> str  (returns live workout stats)
+        on_command:  optional callable(cmd, value) -> str  (mutates session, returns reply)
         """
-        self.llm_call = llm_call
         self.get_context = get_context or (lambda: "")
-        self.on_command = on_command
-        self.stop_event = threading.Event()
-        self.audio_q = queue.Queue()
-        self.muted = threading.Event()
-        self._stt = None
-        self._tts = None
-        self._tts_sr = 24000
-        self._out_stream = None
+        self.on_command  = on_command
+        self.client      = Groq()
+        self.stop_event  = threading.Event()
+        self.audio_q     = queue.Queue()
+        self.muted       = threading.Event()
         self.active_until = 0.0
 
-    def _load(self):
-        from mlx_audio.stt.utils import load_model as load_stt
-        from mlx_audio.tts.utils import load_model as load_tts
-        print("[voice] loading STT...")
-        self._stt = load_stt(STT_MODEL_NAME)
-        print("[voice] loading TTS...")
-        self._tts = load_tts(TTS_MODEL_NAME)
-        self._tts_sr = self._tts.sample_rate
-        self._out_stream = sd.OutputStream(samplerate=self._tts_sr, channels=1, dtype="float32")
-        self._out_stream.start()
-        print("[voice] warming TTS...")
-        self._synth("hi")
-        print("[voice] ready. Say 'hey buddy' to wake me.")
-
-    def _synth(self, text):
-        text = EMOJI_RE.sub("", text).strip()
-        if not text:
-            return None
-        chunks = []
-        for r in self._tts.generate(text=text, voice=VOICE, speed=1.0, lang_code="en", stream=False):
-            chunks.append(np.asarray(r.audio))
-        if not chunks:
-            return None
-        return np.concatenate(chunks).astype(np.float32)
-
-    def _transcribe(self, audio):
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        sf.write(tmp.name, audio, SAMPLE_RATE)
-        try:
-            result = self._stt.generate(tmp.name, verbose=False)
-        finally:
-            os.unlink(tmp.name)
-        return getattr(result, "text", "").strip()
-
-    def _play(self, audio):
-        if audio is None:
-            return
-        try:
-            self._out_stream.write(audio)
-        except Exception as e:
-            print(f"[voice] audio error: {e}")
-
-    def _speak(self, text):
-        self._play(self._synth(text))
+    # ── audio helpers ──────────────────────────────────────────────────────
 
     def _audio_callback(self, indata, frames, time_, status):
         if not self.muted.is_set():
             self.audio_q.put(indata.copy())
 
-    def _build_prompt(self, user_text):
+    def _transcribe(self, audio):
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        sf.write(tmp.name, audio, SAMPLE_RATE)
+        try:
+            with open(tmp.name, "rb") as f:
+                result = self.client.audio.transcriptions.create(
+                    file=(tmp.name, f.read()),
+                    model=GROQ_STT_MODEL,
+                    temperature=0,
+                    response_format="verbose_json",
+                )
+        finally:
+            os.unlink(tmp.name)
+        return (result.text or "").strip()
+
+    def _synth(self, text):
+        text = EMOJI_RE.sub("", text).strip()
+        if not text:
+            return None, None
+        resp = self.client.audio.speech.create(
+            model=GROQ_TTS_MODEL,
+            voice=GROQ_TTS_VOICE,
+            response_format="wav",
+            input=text,
+        )
+        buf = io.BytesIO(resp.content)
+        audio, sr = sf.read(buf, dtype="float32")
+        if audio.ndim > 1:
+            audio = audio[:, 0]
+        return audio, sr
+
+    def _play(self, audio, sr):
+        if audio is None:
+            return
+        try:
+            sd.play(audio, sr)
+            sd.wait()
+        except Exception as e:
+            print(f"\n[voice] playback error: {e}")
+
+    def _speak(self, text):
+        audio, sr = self._synth(text)
+        self._play(audio, sr)
+
+    # ── LLM streaming ──────────────────────────────────────────────────────
+
+    def _build_messages(self, user_text):
         ctx = self.get_context()
         sys = SYSTEM_PROMPT + (f"\n\nLive workout stats:\n{ctx}" if ctx else "")
-        return f"<start_of_turn>system\n{sys}<end_of_turn>\n<start_of_turn>user\n{user_text}<end_of_turn>\n<start_of_turn>model\n"
+        return [
+            {"role": "system",  "content": sys},
+            {"role": "user",    "content": user_text},
+        ]
 
     def _ask_and_speak(self, user_text):
         self.muted.set()
         try:
-            prompt = self._build_prompt(user_text)
             play_q = queue.Queue()
-            done = threading.Event()
+            done   = threading.Event()
 
             def player():
                 while not done.is_set() or not play_q.empty():
                     try:
-                        audio = play_q.get(timeout=0.1)
+                        audio, sr = play_q.get(timeout=0.1)
                     except queue.Empty:
                         continue
-                    self._play(audio)
+                    self._play(audio, sr)
 
             player_t = threading.Thread(target=player, daemon=True)
             player_t.start()
 
-            buf = ""
+            buf     = ""
+            full    = []
+            stream  = self.client.chat.completions.create(
+                model=GROQ_LLM_MODEL,
+                messages=self._build_messages(user_text),
+                temperature=0.6,
+                max_completion_tokens=80,
+                stream=True,
+            )
             try:
-                for delta in self.llm_call(prompt):
-                    buf += delta
+                for chunk in stream:
+                    delta = chunk.choices[0].delta.content or ""
+                    if not delta:
+                        continue
+                    buf  += delta
+                    full.append(delta)
                     print(delta, end="", flush=True)
                     m = SENTENCE_END.search(buf)
                     if m:
-                        end = m.end()
+                        end      = m.end()
                         sentence = buf[:end].strip()
                         if sentence:
-                            audio = self._synth(sentence)
+                            audio, sr = self._synth(sentence)
                             if audio is not None:
-                                play_q.put(audio)
+                                play_q.put((audio, sr))
                         buf = buf[end:]
                 tail = buf.strip()
                 if tail:
-                    audio = self._synth(tail)
+                    audio, sr = self._synth(tail)
                     if audio is not None:
-                        play_q.put(audio)
+                        play_q.put((audio, sr))
             finally:
                 print()
                 done.set()
@@ -180,21 +196,24 @@ class VoiceAssistant:
                 except queue.Empty: break
             self.muted.clear()
 
+    # ── main loop ──────────────────────────────────────────────────────────
+
     def _loop(self):
+        print("[voice] ready. Say 'hey buddy' to wake me.")
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=self._audio_callback):
-            buffer = np.zeros((0, 1), dtype=np.float32)
+            buffer         = np.zeros((0, 1), dtype=np.float32)
             silence_samples = 0
-            speech_samples = 0
-            in_speech = False
+            speech_samples  = 0
+            in_speech       = False
             while not self.stop_event.is_set():
                 try:
                     chunk = self.audio_q.get(timeout=0.2)
                 except queue.Empty:
                     continue
                 buffer = np.concatenate([buffer, chunk])
-                rms = float(np.sqrt(np.mean(chunk**2)))
+                rms    = float(np.sqrt(np.mean(chunk**2)))
                 if rms > SILENCE_THRESHOLD:
-                    in_speech = True
+                    in_speech       = True
                     speech_samples += len(chunk)
                     silence_samples = 0
                 elif in_speech:
@@ -204,11 +223,11 @@ class VoiceAssistant:
                         try:
                             text = self._transcribe(buffer)
                         except Exception as e:
-                            print(f"[voice] STT error: {e}")
+                            print(f"\n[voice] STT error: {e}")
                             text = ""
                         if text:
                             is_active = time.time() < self.active_until
-                            woke = _has_wake(text)
+                            woke      = _has_wake(text)
                             if woke or is_active:
                                 print(f"\nYou: {text}")
                                 query = _strip_wake(text) if woke else text
@@ -234,13 +253,12 @@ class VoiceAssistant:
                                         except Exception as e:
                                             print(f"\n[voice] error: {e}")
                                 self.active_until = time.time() + ACTIVE_TIMEOUT
-                    buffer = np.zeros((0, 1), dtype=np.float32)
+                    buffer          = np.zeros((0, 1), dtype=np.float32)
                     silence_samples = 0
-                    speech_samples = 0
-                    in_speech = False
+                    speech_samples  = 0
+                    in_speech       = False
 
     def start(self):
-        self._load()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
