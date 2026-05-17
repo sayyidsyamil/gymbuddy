@@ -649,6 +649,11 @@ def handle_voice_command(session, cmd, value=0):
         session.rep_target = max(0, session.rep_target) + value
         msg = f"Done! Target is now {session.rep_target} reps."
         session.voice_flash = f"TARGET +{value} -> {session.rep_target}"
+    elif cmd == "reduce_reps":
+        old_target = max(0, session.rep_target)
+        session.rep_target = max(0, old_target - value)
+        msg = f"Done! Target reduced to {session.rep_target} reps."
+        session.voice_flash = f"TARGET -{value} -> {session.rep_target}"
     elif cmd == "set_target":
         session.rep_target = value
         msg = f"Target set to {value} reps. Let's go!"

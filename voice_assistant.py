@@ -28,17 +28,19 @@ WAKE_PATTERNS = [
     re.compile(r"\bhey\s+buddy\b", re.IGNORECASE),
     re.compile(r"\bbuddy\b",       re.IGNORECASE),
 ]
-ACTIVE_TIMEOUT = 30.0
 SENTENCE_END   = re.compile(r"[.!?\n]")
 EMOJI_RE       = re.compile(
     "[" "\U0001F300-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F000-\U0001F2FF" "]+"
 )
+NUMBER_VALUE = r"\d+|one|two|three|four|five|six|seven|eight|nine|ten"
 
 _CMD_PATTERNS = [
-    (re.compile(r"\b(?:add|at)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:more\s+)?(?:r[ae]ps?)?\b", re.IGNORECASE),   "add_reps"),
-    (re.compile(r"\bset\s+(?:(?:the\s+)?target\s+(?:to\s+)?|it\s+to\s+)(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*r[ae]ps?\b", re.IGNORECASE), "set_target"),
-    (re.compile(r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+more(?:\s+r[ae]ps?)?(?:\s+\w+)?\b", re.IGNORECASE), "add_reps"),
-    (re.compile(r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+r[ae]ps?\s*(?:please|now)?\b", re.IGNORECASE), "set_target"),
+    (re.compile(rf"\b(?:add|increase|plus|give\s+me)\s+({NUMBER_VALUE})\s*(?:more\s+)?(?:r[ae]ps?)?\b", re.IGNORECASE), "add_reps"),
+    (re.compile(rf"\b(?:reduce|decrease|minus|subtract|remove|take\s+away|too\s+much.*(?:reduce|remove|take\s+away))\s+({NUMBER_VALUE})\s*(?:r[ae]ps?)?\b", re.IGNORECASE), "reduce_reps"),
+    (re.compile(rf"\b(?:set|make|change)\s+(?:(?:the\s+)?target\s+)?(?:to\s+)?({NUMBER_VALUE})\s*(?:r[ae]ps?)?\b", re.IGNORECASE), "set_target"),
+    (re.compile(rf"\b(?:target|goal)\s+({NUMBER_VALUE})\s*(?:r[ae]ps?)?\b", re.IGNORECASE), "set_target"),
+    (re.compile(rf"\b({NUMBER_VALUE})\s+more(?:\s+r[ae]ps?)?(?:\s+\w+)?\b", re.IGNORECASE), "add_reps"),
+    (re.compile(rf"\b({NUMBER_VALUE})\s+r[ae]ps?\s*(?:please|now)?\b", re.IGNORECASE), "set_target"),
     (re.compile(r"\b(?:clear|remove|cancel)\s+(?:the\s+)?target\b", re.IGNORECASE), "clear_target"),
     (re.compile(r"\b(?:start|begin)\s+(?:the\s+)?(?:set|workout|session)\b", re.IGNORECASE), "start"),
     (re.compile(r"\b(?:stop|finish|end|done)\s*(?:the\s+)?(?:set|workout|session)?\b", re.IGNORECASE), "stop"),
@@ -91,7 +93,6 @@ class VoiceAssistant:
         self.stop_event  = threading.Event()
         self.audio_q     = queue.Queue()
         self.muted       = threading.Event()
-        self.active_until = 0.0
 
     # ── audio helpers ──────────────────────────────────────────────────────
 
@@ -222,7 +223,7 @@ class VoiceAssistant:
     # ── main loop ──────────────────────────────────────────────────────────
 
     def _loop(self):
-        print("[voice] ready. Say 'hey buddy' to wake me.")
+        print("[voice] ready. Start every request with 'buddy'.")
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=self._audio_callback):
             buffer         = np.zeros((0, 1), dtype=np.float32)
             silence_samples = 0
@@ -249,14 +250,14 @@ class VoiceAssistant:
                             print(f"\n[voice] STT error: {e}")
                             text = ""
                         if text:
-                            is_active = time.time() < self.active_until
                             woke      = _has_wake(text)
-                            if woke or is_active:
+                            if woke:
                                 print(f"\nYou: {text}")
-                                query = _strip_wake(text) if woke else text
+                                query = _strip_wake(text)
                                 if not query:
-                                    print("AI:  Yeah?")
-                                    self._speak("Yeah?")
+                                    reply = "Say the command after buddy."
+                                    print(f"AI:  {reply}")
+                                    self._speak(reply)
                                 else:
                                     parsed = _parse_command(query) if self.on_command else None
                                     if parsed:
@@ -275,7 +276,6 @@ class VoiceAssistant:
                                             self._ask_and_speak(query)
                                         except Exception as e:
                                             print(f"\n[voice] error: {e}")
-                                self.active_until = time.time() + ACTIVE_TIMEOUT
                     buffer          = np.zeros((0, 1), dtype=np.float32)
                     silence_samples = 0
                     speech_samples  = 0
