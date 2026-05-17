@@ -29,6 +29,26 @@ EMOJI_RE = re.compile(
     "[" "\U0001F300-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F000-\U0001F2FF" "]+"
 )
 
+_CMD_PATTERNS = [
+    (re.compile(r"\badd\s+(\d+)\s*(?:more\s+)?reps?\b", re.IGNORECASE),   "add_reps"),
+    (re.compile(r"\bset\s+(?:(?:the\s+)?target\s+(?:to\s+)?|it\s+to\s+)(\d+)\s*reps?\b", re.IGNORECASE), "set_target"),
+    (re.compile(r"\b(\d+)\s+(?:more\s+)?reps?\s*(?:please|now)?\b", re.IGNORECASE), "set_target"),
+    (re.compile(r"\b(?:clear|remove|cancel)\s+(?:the\s+)?target\b", re.IGNORECASE), "clear_target"),
+    (re.compile(r"\b(?:start|begin)\s+(?:the\s+)?(?:set|workout|session)\b", re.IGNORECASE), "start"),
+    (re.compile(r"\b(?:stop|finish|end|done)\s*(?:the\s+)?(?:set|workout|session)?\b", re.IGNORECASE), "stop"),
+    (re.compile(r"\breset\b", re.IGNORECASE), "reset"),
+]
+
+
+def _parse_command(text):
+    """Return (cmd, value) if text matches a workout command, else None."""
+    for pattern, cmd in _CMD_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            value = int(m.group(1)) if m.lastindex and m.group(1).isdigit() else 0
+            return cmd, value
+    return None
+
 
 def _strip_wake(text):
     for pat in WAKE_PATTERNS:
@@ -41,13 +61,15 @@ def _has_wake(text):
 
 
 class VoiceAssistant:
-    def __init__(self, llm_call, get_context=None):
+    def __init__(self, llm_call, get_context=None, on_command=None):
         """
-        llm_call: callable(prompt: str) -> Iterator[str]  (yields token deltas)
-        get_context: optional callable() -> str  (extra context appended to system prompt)
+        llm_call:   callable(prompt: str) -> Iterator[str]  (yields token deltas)
+        get_context: optional callable() -> str  (returns live workout stats string)
+        on_command: optional callable(cmd: str, value: int) -> str  (mutates session, returns reply)
         """
         self.llm_call = llm_call
         self.get_context = get_context or (lambda: "")
+        self.on_command = on_command
         self.stop_event = threading.Event()
         self.audio_q = queue.Queue()
         self.muted = threading.Event()
@@ -194,11 +216,23 @@ class VoiceAssistant:
                                     print("AI:  Yeah?")
                                     self._speak("Yeah?")
                                 else:
-                                    print("AI:  ", end="", flush=True)
-                                    try:
-                                        self._ask_and_speak(query)
-                                    except Exception as e:
-                                        print(f"\n[voice] error: {e}")
+                                    parsed = _parse_command(query) if self.on_command else None
+                                    if parsed:
+                                        cmd, value = parsed
+                                        try:
+                                            reply = self.on_command(cmd, value)
+                                        except Exception as e:
+                                            reply = None
+                                            print(f"\n[voice] command error: {e}")
+                                        if reply:
+                                            print(f"AI:  {reply}")
+                                            self._speak(reply)
+                                    else:
+                                        print("AI:  ", end="", flush=True)
+                                        try:
+                                            self._ask_and_speak(query)
+                                        except Exception as e:
+                                            print(f"\n[voice] error: {e}")
                                 self.active_until = time.time() + ACTIVE_TIMEOUT
                     buffer = np.zeros((0, 1), dtype=np.float32)
                     silence_samples = 0

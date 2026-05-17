@@ -72,6 +72,9 @@ class CurlSession:
     saw_top: bool = False
     saw_partial: bool = False
     perception_warnings: Counter = field(default_factory=Counter)
+    rep_target: int = 0
+    voice_flash: str = ""
+    voice_flash_until: float = 0.0
 
     def start(self):
         self.active = True
@@ -379,9 +382,19 @@ def draw_panel(frame, session, arm, fps, debug, llm_enabled):
     cv2.putText(frame, "LOCAL AI CURL COACH", (30, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (160, 210, 255), 1)
     cv2.putText(frame, status, (30, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (190, 190, 190), 2)
 
-    cv2.putText(frame, str(session.clean_reps).zfill(2), (30, 230), cv2.FONT_HERSHEY_SIMPLEX, 3.2, (255, 255, 255), 7)
+    if session.rep_target > 0:
+        rep_str = f"{str(session.clean_reps).zfill(2)}/{session.rep_target}"
+        done = session.clean_reps >= session.rep_target
+        rep_color = (0, 255, 120) if done else (255, 255, 255)
+    else:
+        rep_str = str(session.clean_reps).zfill(2)
+        rep_color = (255, 255, 255)
+    cv2.putText(frame, rep_str, (30, 230), cv2.FONT_HERSHEY_SIMPLEX, 3.2, rep_color, 7)
     cv2.putText(frame, "CLEAN REPS", (36, 268), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (190, 190, 190), 2)
     cv2.putText(frame, f"ATTEMPTS {session.total_attempts}", (38, 298), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (190, 190, 190), 2)
+
+    if session.voice_flash and time.time() < session.voice_flash_until:
+        cv2.putText(frame, session.voice_flash, (30, 318), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 200), 2)
 
     cue_color = (0, 255, 120) if session.cue in ("Ready", "Rep counted", "Set complete") else (0, 220, 255)
     cv2.putText(frame, session.cue.upper(), (30, 335), cv2.FONT_HERSHEY_SIMPLEX, 0.72, cue_color, 2)
@@ -577,11 +590,47 @@ def session_context(session):
     parts = [
         f"clean_reps: {session.clean_reps}",
         f"total_attempts: {session.total_attempts}",
+        f"rep_target: {session.rep_target if session.rep_target else 'not set'}",
         f"state: {session.state}",
         f"current cue: {session.cue}",
         f"current tip: {session.coach_tip}",
     ]
     return "\n".join(parts)
+
+
+def handle_voice_command(session, cmd, value=0):
+    """Mutate session from a parsed voice command. Returns spoken confirmation."""
+    flash_duration = 3.0
+    if cmd == "add_reps":
+        session.rep_target = max(0, session.rep_target) + value
+        msg = f"Done! Target is now {session.rep_target} reps."
+        session.voice_flash = f"TARGET +{value}  →  {session.rep_target}"
+    elif cmd == "set_target":
+        session.rep_target = value
+        msg = f"Target set to {value} reps. Let's go!"
+        session.voice_flash = f"TARGET: {value} REPS"
+    elif cmd == "clear_target":
+        session.rep_target = 0
+        msg = "Target cleared."
+        session.voice_flash = "TARGET CLEARED"
+    elif cmd == "start":
+        if not session.active:
+            session.start()
+        msg = "Set started. Give it your all!"
+        session.voice_flash = "SET STARTED"
+    elif cmd == "stop":
+        if session.active:
+            session.stop()
+        msg = f"Nice work! {session.clean_reps} clean reps."
+        session.voice_flash = f"SET DONE  {session.clean_reps} REPS"
+    elif cmd == "reset":
+        session.__init__()
+        msg = "Session reset. Ready when you are."
+        session.voice_flash = "SESSION RESET"
+    else:
+        return None
+    session.voice_flash_until = time.time() + flash_duration
+    return msg
 
 
 def print_set_review(session):
@@ -629,6 +678,7 @@ def main():
             voice = VoiceAssistant(
                 llm_call=lambda p: stream_llm(p, max_tokens=80, temperature=0.7),
                 get_context=lambda: session_context(session),
+                on_command=lambda cmd, value=0: handle_voice_command(session, cmd, value),
             )
             voice.start()
         except Exception as exc:
