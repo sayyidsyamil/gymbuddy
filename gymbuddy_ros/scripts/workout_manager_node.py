@@ -38,6 +38,9 @@ class WorkoutManagerNode:
         elif msg.action == "add_reps":
             self.target_reps += max(0, msg.value)
             self.coach_pub.publish(String(data=f"Target now {self.target_reps} reps."))
+        elif msg.action == "remove_reps":
+            self.target_reps = max(1, self.target_reps - msg.value)
+            self.coach_pub.publish(String(data=f"Target reduced to {self.target_reps} reps."))
 
     def on_stats(self, msg: WorkoutStats):
         # Avoid feedback loop: only act on stats with target_reps == 0 (from rep_counter).

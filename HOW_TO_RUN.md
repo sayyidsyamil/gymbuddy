@@ -54,10 +54,14 @@ source devel/setup.bash   # Ubuntu/Linux bash
 Symlink this repo's package into your workspace:
 
 ```bash
-ln -s ~/path/to/gymbuddy/gymbuddy_ros ~/catkin_ws/src/gymbuddy_ros
+ln -s /home/mustar/Assignment_DONT_DELETE/gymbuddy/gymbuddy_ros ~/catkin_ws/src/gymbuddy_ros
 ```
 
-(Use the absolute path to wherever you cloned `gymbuddy`.)
+Ensure all node scripts are executable (only needs to be done once):
+
+```bash
+chmod +x ~/catkin_ws/src/gymbuddy_ros/scripts/*.py
+```
 
 ---
 

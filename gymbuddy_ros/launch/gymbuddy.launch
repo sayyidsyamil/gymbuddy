@@ -1,14 +1,28 @@
 <launch>
-  <arg name="camera_device" default="0"/>
+  <arg name="camera_device" default="2"/>
   <arg name="initial_target" default="10"/>
   <arg name="qwen_gguf" default="$(optenv GYMBUDDY_QWEN_GGUF)"/>
-  <arg name="use_camera" default="true"/>
+
+  <arg name="use_camera"       default="true"/>
+  <arg name="use_astra"        default="false"/>  <!-- Astra depth (color) camera -->
+  <arg name="astra_color_topic" default="/camera/color/image_raw"/>
   <arg name="use_sim_skeleton" default="false"/>
-  <arg name="use_voice" default="true"/>
-  <arg name="use_tts" default="true"/>
+  <arg name="use_voice"        default="true"/>
+  <arg name="use_tts"          default="true"/>
+  <arg name="use_display"      default="true"/>
+
+  <!-- Robot USB microphone (sounddevice index 1: 'USB Audio Device hw:1,0').
+       Set to -1 to fall back to the system default input. -->
+  <arg name="audio_device" default="1"/>
+
+  <!-- Astra depth camera driver: publishes /camera/color/image_raw, depth, etc. -->
+  <include if="$(eval arg('use_camera') and arg('use_astra'))"
+           file="$(find astra_camera)/launch/astra_pro_plus.launch"/>
 
   <node if="$(arg use_camera)" pkg="gymbuddy_ros" type="camera_input_node.py" name="camera_input" output="screen">
-    <param name="device" value="$(arg camera_device)"/>
+    <param name="source"      value="$(eval 'topic' if arg('use_astra') in (True, 'true', 'True', '1') else 'usb')"/>
+    <param name="device"      value="$(arg camera_device)"/>
+    <param name="input_topic" value="$(arg astra_color_topic)"/>
   </node>
 
   <node if="$(arg use_camera)" pkg="gymbuddy_ros" type="pose_detection_node.py" name="pose_detection" output="screen"/>
@@ -16,8 +30,12 @@
   <node pkg="gymbuddy_ros" type="form_analysis_node.py" name="form_analysis" output="screen"/>
   <node pkg="gymbuddy_ros" type="rep_counter_node.py"   name="rep_counter"   output="screen"/>
 
-  <node if="$(arg use_voice)" pkg="gymbuddy_ros" type="wake_word_node.py"        name="wake_word"        output="screen"/>
-  <node if="$(arg use_voice)" pkg="gymbuddy_ros" type="speech_to_text_node.py"   name="speech_to_text"   output="screen"/>
+  <node if="$(arg use_voice)" pkg="gymbuddy_ros" type="wake_word_node.py" name="wake_word" output="screen">
+    <param name="audio_device" value="$(arg audio_device)"/>
+  </node>
+  <node if="$(arg use_voice)" pkg="gymbuddy_ros" type="speech_to_text_node.py" name="speech_to_text" output="screen">
+    <param name="audio_device" value="$(arg audio_device)"/>
+  </node>
   <node pkg="gymbuddy_ros" type="intent_extractor_node.py" name="intent_extractor" output="screen"/>
 
   <node pkg="gymbuddy_ros" type="llm_decision_node.py" name="llm_decision" output="screen">
@@ -29,4 +47,6 @@
   <node pkg="gymbuddy_ros" type="motivation_node.py" name="motivation" output="screen"/>
 
   <node if="$(arg use_tts)" pkg="gymbuddy_ros" type="text_to_speech_node.py" name="text_to_speech" output="screen"/>
+
+  <node if="$(arg use_display)" pkg="gymbuddy_ros" type="display_node.py" name="display" output="screen" required="false"/>
 </launch>

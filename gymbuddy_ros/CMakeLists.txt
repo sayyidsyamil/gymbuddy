@@ -39,5 +39,6 @@ catkin_install_python(PROGRAMS
   scripts/workout_manager_node.py
   scripts/motivation_node.py
   scripts/text_to_speech_node.py
+  scripts/display_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

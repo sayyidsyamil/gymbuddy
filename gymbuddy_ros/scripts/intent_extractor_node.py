@@ -11,7 +11,10 @@ from gymbuddy_ros.msg import IntentUpdate
 NUMBER_WORDS = {
     "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-    "eleven": 11, "twelve": 12, "fifteen": 15, "twenty": 20,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19, "twenty": 20, "twenty five": 25, "thirty": 30,
+    "forty": 40, "fifty": 50,
 }
 
 
@@ -55,7 +58,13 @@ class IntentExtractorNode:
             return {"action": "stop_set"}
         if re.search(r"\b(reset|clear)\b", text):
             return {"action": "reset"}
-        if re.search(r"\badd\b.*\breps?\b", text):
+        # "remove / subtract / minus / take off / reduce N reps"
+        if re.search(r"\b(remove|subtract|minus|take off|reduce|less)\b", text):
+            value = parse_int(text)
+            if value is not None:
+                return {"action": "remove_reps", "value": abs(value)}
+        # "add N reps" — "reps" optional so "add five" also works
+        if re.search(r"\badd\b", text):
             value = parse_int(text)
             if value is not None:
                 return {"action": "add_reps", "value": value}

@@ -8,9 +8,12 @@ import rospy
 from gymbuddy_ros.msg import IntentUpdate, Landmark, Skeleton
 
 
-RIGHT_SHOULDER = 12
-RIGHT_ELBOW = 14
-RIGHT_WRIST = 16
+# COCO 17-keypoint indices (YOLOv8 pose)
+RIGHT_SHOULDER =  6
+RIGHT_ELBOW    =  8
+RIGHT_WRIST    = 10
+RIGHT_HIP      = 12
+NUM_LANDMARKS  = 17
 
 
 class SimSkeletonNode:
@@ -55,10 +58,12 @@ class SimSkeletonNode:
         self.pub.publish(self.make_skeleton(angle))
 
     def make_skeleton(self, angle_degrees):
-        landmarks = [Landmark(x=0.0, y=0.0, z=0.0, visibility=0.0) for _ in range(33)]
+        landmarks = [Landmark(x=0.0, y=0.0, z=0.0, visibility=0.0)
+                     for _ in range(NUM_LANDMARKS)]
 
         shoulder_px = (480.0, 200.0)
-        elbow_px = (480.0, 330.0)
+        elbow_px    = (480.0, 330.0)
+        hip_px      = (470.0, 380.0)
         arm_len = 130.0
         theta = math.radians(angle_degrees)
         wrist_px = (
@@ -68,8 +73,9 @@ class SimSkeletonNode:
 
         for index, point in (
             (RIGHT_SHOULDER, shoulder_px),
-            (RIGHT_ELBOW, elbow_px),
-            (RIGHT_WRIST, wrist_px),
+            (RIGHT_ELBOW,    elbow_px),
+            (RIGHT_WRIST,    wrist_px),
+            (RIGHT_HIP,      hip_px),
         ):
             landmarks[index] = Landmark(
                 x=point[0] / self.image_width,
