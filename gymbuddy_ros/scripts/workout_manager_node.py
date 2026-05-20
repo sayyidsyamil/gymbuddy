@@ -7,6 +7,20 @@ from std_msgs.msg import String
 from gymbuddy_ros.msg import IntentUpdate, WorkoutStats
 
 
+# kcal per clean rep — MET-based estimate assuming ~70 kg bodyweight, moderate pace
+CALORIES_PER_REP = {
+    "bicep_curl":     0.15,
+    "one_arm_bicep_curl": 0.15,
+    "lateral_raise":  0.12,
+}
+CALORIES_DEFAULT  = 0.13
+
+
+def _calories_for_set(exercise: str, clean_reps: int) -> float:
+    rate = CALORIES_PER_REP.get(exercise, CALORIES_DEFAULT)
+    return round(rate * clean_reps, 2)
+
+
 class WorkoutManagerNode:
     def __init__(self):
         self.target_reps = int(rospy.get_param("~initial_target", 10))
@@ -49,13 +63,18 @@ class WorkoutManagerNode:
 
         if self.set_active and msg.clean_reps >= self.target_reps:
             self.set_active = False
+            kcal = _calories_for_set(msg.exercise, msg.clean_reps)
             self.history.append({
                 "exercise": msg.exercise,
                 "clean_reps": msg.clean_reps,
                 "total_attempts": msg.total_attempts,
+                "calories_burned": kcal,
             })
             self.coach_pub.publish(
-                String(data=f"Target hit: {msg.clean_reps} of {msg.total_attempts}. Set complete.")
+                String(data=(
+                    f"Target hit: {msg.clean_reps} of {msg.total_attempts}. "
+                    f"Set complete. Approximately {kcal:.1f} calories burned."
+                ))
             )
             stop = IntentUpdate()
             stop.header.stamp = rospy.Time.now()
@@ -74,6 +93,7 @@ class WorkoutManagerNode:
         out.last_rep_seconds = msg.last_rep_seconds
         out.last_min_angle = msg.last_min_angle
         out.last_rep_issue = msg.last_rep_issue
+        out.calories_burned = msg.calories_burned
         self.stats_pub.publish(out)
 
 

@@ -29,8 +29,6 @@ class CameraInputNode:
         self.input_topic   = rospy.get_param("~input_topic",   "/camera/color/image_raw")
         self.device        = rospy.get_param("~device",          0)
         self.retry_seconds = float(rospy.get_param("~retry_seconds", 3.0))
-        # Mirror the frame so a user-facing webcam shows "selfie" view and the
-        # skeleton's left/right matches the on-screen left/right.
         self.flip_horizontal = bool(rospy.get_param("~flip_horizontal", True))
         self.encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
 

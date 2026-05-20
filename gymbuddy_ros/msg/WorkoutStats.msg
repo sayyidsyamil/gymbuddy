@@ -6,3 +6,4 @@ int32 target_reps
 float32 last_rep_seconds
 float32 last_min_angle
 string last_rep_issue
+float32 calories_burned

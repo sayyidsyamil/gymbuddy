@@ -40,8 +40,13 @@ class WakeWordNode:
         self.threshold = float(rospy.get_param("~threshold", 0.5))
         self.cooldown_seconds = float(rospy.get_param("~cooldown_seconds", 8.0))
         self.audio_device = _resolve_audio_device(rospy.get_param("~audio_device", -1))
+        # Spoken prompt + delay before STT starts. Delay must cover the time it
+        # takes pyttsx3 to say the prompt, or the mic will catch the tail end.
+        self.prompt_text = rospy.get_param("~prompt_text", "What can I help you with?")
+        self.prompt_delay_seconds = float(rospy.get_param("~prompt_delay_seconds", 1.6))
 
         self.pub = rospy.Publisher("/system_wake_state", Bool, queue_size=1, latch=True)
+        self.prompt_pub = rospy.Publisher("/tts_priority", String, queue_size=2)
         self.pub.publish(Bool(data=False))
 
         rospy.loginfo("wake_word_node loading openwakeword model: %s", self.wake_model_name)
@@ -113,8 +118,22 @@ class WakeWordNode:
                         return
                     self._cooldown_until = rospy.Time.now() + rospy.Duration.from_sec(self.cooldown_seconds)
                 rospy.loginfo("wake word '%s' triggered (score=%.2f)", name, score)
-                self.pub.publish(Bool(data=True))
+                # Offload prompt + delayed wake-flip to a worker — never block
+                # the PortAudio callback.
+                threading.Thread(target=self._handle_trigger,
+                                 args=(name, float(score)), daemon=True).start()
                 return
+
+    def _handle_trigger(self, name: str, score: float):
+        """Speak the prompt, wait for it to finish, then arm STT."""
+        # Speak the prompt first (bypasses the TTS wake gate via /tts_priority).
+        if self.prompt_text:
+            self.prompt_pub.publish(String(data=self.prompt_text))
+        # Give pyttsx3 time to finish before STT opens the mic.
+        if self.prompt_delay_seconds > 0:
+            rospy.sleep(self.prompt_delay_seconds)
+        # Now signal STT to start recording.
+        self.pub.publish(Bool(data=True))
 
     def shutdown(self):
         try:

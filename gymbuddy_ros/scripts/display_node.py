@@ -289,7 +289,7 @@ class DisplayNode:
             hot = _point_in_rect(self._mouse_pos, rect)
             cv2.rectangle(frame, (mx, my), (mx + mw, my + mh),
                           CLR_BTN_HOT if hot else CLR_BTN, -1)
-            tw, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)[0:2]
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)
             cv2.putText(frame, label,
                         (mx + (mw - tw) // 2, my + mh - 16),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)

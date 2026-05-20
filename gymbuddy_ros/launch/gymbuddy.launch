@@ -11,9 +11,9 @@
   <arg name="use_tts"          default="true"/>
   <arg name="use_display"      default="true"/>
 
-  <!-- Robot USB microphone (sounddevice index 1: 'USB Audio Device hw:1,0').
+  <!-- Robot USB microphone (sounddevice index 2: 'USB Device 0x46d:0x825 hw:2,0' - Logitech).
        Set to -1 to fall back to the system default input. -->
-  <arg name="audio_device" default="1"/>
+  <arg name="audio_device" default="2"/>
 
   <!-- Astra depth camera driver: publishes /camera/color/image_raw, depth, etc. -->
   <include if="$(eval arg('use_camera') and arg('use_astra'))"

@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Runs MediaPipe Pose on incoming frames and publishes 17 COCO-style keypoints.
 
-MediaPipe Pose returns 33 BlazePose landmarks. To keep the rest of the GymBuddy
-ROS graph (form_analysis, rep_counter, display, sim_skeleton) unchanged, we
-remap the relevant BlazePose indices into the COCO 17-keypoint layout that
-those nodes already use.
-
-Face landmarks (COCO indices 0..4 — nose, eyes, ears) are zeroed out: GymBuddy
-only needs the shoulders, elbows, wrists, hips, knees, and ankles for form
-analysis and rep counting.
-"""
 
 import cv2
 import mediapipe as mp
@@ -20,11 +10,6 @@ from std_msgs.msg import Int32MultiArray, MultiArrayDimension
 
 from gymbuddy_ros.msg import Landmark, Skeleton
 
-# BlazePose (33) → COCO (17) index remap.
-# COCO order: nose, l_eye, r_eye, l_ear, r_ear, l_shoulder, r_shoulder,
-#             l_elbow, r_elbow, l_wrist, r_wrist, l_hip, r_hip,
-#             l_knee, r_knee, l_ankle, r_ankle
-# Entries marked None are intentionally skipped (face — not used by GymBuddy).
 BLAZE_TO_COCO = [
     None,  # 0  nose          — skipped
     None,  # 1  left eye      — skipped
@@ -46,7 +31,6 @@ BLAZE_TO_COCO = [
 ]
 
 # MediaPipe expects a reasonably large input. Upscaling small frames before
-# inference is a cheap accuracy win for webcam streams.
 INFERENCE_SIDE = 640
 
 
