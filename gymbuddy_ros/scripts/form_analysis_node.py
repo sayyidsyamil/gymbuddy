@@ -85,91 +85,156 @@ class FormAnalysisNode:
     # Bicep curl                                                           #
     # ------------------------------------------------------------------ #
 
-    def _best_curl_arm(self, skel: Skeleton):
+    def _get_curl_arm(self, skel: Skeleton, side: str):
         w, h = skel.image_width, skel.image_height
-        candidates = []
-        for side, idx in CURL_ARMS.items():
-            s, e, wt = skel.landmarks[idx["shoulder"]], skel.landmarks[idx["elbow"]], skel.landmarks[idx["wrist"]]
-            vis = (s.visibility + e.visibility + wt.visibility) / 3.0
-            if vis < self.min_visibility_curl:
-                continue
-            angle = angle_between(_pt(s, w, h), _pt(e, w, h), _pt(wt, w, h))
-            candidates.append({"side": side, "angle": angle, "confidence": vis,
-                                "shoulder": _pt(s, w, h), "elbow": _pt(e, w, h), "wrist": _pt(wt, w, h)})
-        return max(candidates, key=lambda a: a["confidence"]) if candidates else None
+        idx = CURL_ARMS[side]
+        s, e, wt = skel.landmarks[idx["shoulder"]], skel.landmarks[idx["elbow"]], skel.landmarks[idx["wrist"]]
+        vis = (s.visibility + e.visibility + wt.visibility) / 3.0
+        if vis < self.min_visibility_curl:
+            return None
+        angle = angle_between(_pt(s, w, h), _pt(e, w, h), _pt(wt, w, h))
+        return {"side": side, "angle": angle, "confidence": vis}
+
+    def _curl_status(self, angle: float) -> tuple:
+        if angle <= self.top_angle:
+            return "depth_reached", "elbow at top of curl"
+        elif angle <= self.partial_top_angle:
+            return "near_top", "almost at full curl"
+        elif angle >= self.extended_angle:
+            return "fully_extended", "ready position"
+        else:
+            return "mid_range", "in motion"
 
     def _analyze_bicep_curl(self, skel: Skeleton) -> FormStatus:
         out = FormStatus()
         out.header = skel.header
-        arm = self._best_curl_arm(skel)
-        if arm is None:
+
+        left  = self._get_curl_arm(skel, "left")
+        right = self._get_curl_arm(skel, "right")
+
+        if left is None and right is None:
             out.status = "arm_not_visible"
-            out.detail = "shoulder/elbow/wrist below visibility threshold"
-            out.elbow_angle = float("nan")
-            out.confidence = 0.0
+            out.detail = "both arms below visibility threshold"
+            out.elbow_angle       = float("nan")
+            out.confidence        = 0.0
+            out.right_elbow_angle = float("nan")
+            out.right_confidence  = 0.0
             return out
 
-        angle = arm["angle"]
-        if angle <= self.top_angle:
-            status, detail = "depth_reached", "elbow at top of curl"
-        elif angle <= self.partial_top_angle:
-            status, detail = "near_top", "almost at full curl"
-        elif angle >= self.extended_angle:
-            status, detail = "fully_extended", "ready position"
+        # left arm (primary angle field)
+        if left is not None:
+            l_status, l_detail = self._curl_status(left["angle"])
+            out.elbow_angle = float(left["angle"])
+            out.confidence  = float(left["confidence"])
         else:
-            status, detail = "mid_range", "in motion"
+            l_status = "arm_not_visible"
+            l_detail = "not visible"
+            out.elbow_angle = float("nan")
+            out.confidence  = 0.0
 
-        out.status    = status
-        out.detail    = f"{arm['side']}: {detail}"
-        out.elbow_angle = float(angle)
-        out.confidence  = float(arm["confidence"])
+        # right arm
+        if right is not None:
+            r_status, r_detail = self._curl_status(right["angle"])
+            out.right_elbow_angle = float(right["angle"])
+            out.right_confidence  = float(right["confidence"])
+        else:
+            r_status = "arm_not_visible"
+            r_detail = "not visible"
+            out.right_elbow_angle = float("nan")
+            out.right_confidence  = 0.0
+
+        # overall status: use the arm that's furthest from the top (worst case)
+        if left is not None and right is not None:
+            worst = left if left["angle"] > right["angle"] else right
+            out.status = self._curl_status(worst["angle"])[0]
+            out.detail = f"L:{left['angle']:.0f}deg R:{right['angle']:.0f}deg"
+        elif left is not None:
+            out.status = l_status
+            out.detail = f"left: {l_detail} (right not visible)"
+        else:
+            out.status = r_status
+            out.detail = f"right: {r_detail} (left not visible)"
+
         return out
 
     # ------------------------------------------------------------------ #
     # Lateral raise                                                        #
     # ------------------------------------------------------------------ #
 
-    def _best_lateral_arm(self, skel: Skeleton):
+    def _get_lateral_arm(self, skel: Skeleton, side: str):
         if len(skel.landmarks) < 13:
             return None
         w, h = skel.image_width, skel.image_height
-        candidates = []
-        for side, idx in LATERAL_ARMS.items():
-            s, e, hip = skel.landmarks[idx["shoulder"]], skel.landmarks[idx["elbow"]], skel.landmarks[idx["hip"]]
-            vis = (s.visibility + e.visibility + hip.visibility) / 3.0
-            if vis < self.min_visibility_lateral:
-                continue
-            sp, ep, hp = _pt(s, w, h), _pt(e, w, h), _pt(hip, w, h)
-            abduction = angle_between(hp, sp, ep)   # angle at shoulder between torso-down and arm
-            candidates.append({"side": side, "angle": abduction, "confidence": vis,
-                                "shoulder": sp, "elbow": ep, "hip": hp})
-        return max(candidates, key=lambda a: a["confidence"]) if candidates else None
+        idx = LATERAL_ARMS[side]
+        s, e, hip = skel.landmarks[idx["shoulder"]], skel.landmarks[idx["elbow"]], skel.landmarks[idx["hip"]]
+        vis = (s.visibility + e.visibility + hip.visibility) / 3.0
+        if vis < self.min_visibility_lateral:
+            return None
+        sp, ep, hp = _pt(s, w, h), _pt(e, w, h), _pt(hip, w, h)
+        abduction = angle_between(hp, sp, ep)
+        return {"side": side, "angle": abduction, "confidence": vis}
+
+    def _lateral_status(self, angle: float) -> tuple:
+        if angle <= self.lat_down_angle:
+            return "arm_at_side",  "ready position"
+        elif angle >= self.lat_top_angle:
+            return "at_top",       "arm at shoulder height"
+        elif angle >= self.lat_partial_angle:
+            return "near_top",     "almost at shoulder height"
+        else:
+            return "mid_range",    "raising"
 
     def _analyze_lateral_raise(self, skel: Skeleton) -> FormStatus:
         out = FormStatus()
         out.header = skel.header
-        arm = self._best_lateral_arm(skel)
-        if arm is None:
+
+        left  = self._get_lateral_arm(skel, "left")
+        right = self._get_lateral_arm(skel, "right")
+
+        if left is None and right is None:
             out.status = "arm_not_visible"
-            out.detail = "shoulder/elbow/hip below visibility threshold"
-            out.elbow_angle = float("nan")
-            out.confidence = 0.0
+            out.detail = "both arms below visibility threshold"
+            out.elbow_angle       = float("nan")
+            out.confidence        = 0.0
+            out.right_elbow_angle = float("nan")
+            out.right_confidence  = 0.0
             return out
 
-        angle = arm["angle"]
-        if angle <= self.lat_down_angle:
-            status, detail = "arm_at_side",  "ready position"
-        elif angle >= self.lat_top_angle:
-            status, detail = "at_top",        "arm at shoulder height"
-        elif angle >= self.lat_partial_angle:
-            status, detail = "near_top",      "almost at shoulder height"
+        # left arm (primary angle field)
+        if left is not None:
+            l_status, l_detail = self._lateral_status(left["angle"])
+            out.elbow_angle = float(left["angle"])
+            out.confidence  = float(left["confidence"])
         else:
-            status, detail = "mid_range",     "raising"
+            l_status = "arm_not_visible"
+            l_detail = "not visible"
+            out.elbow_angle = float("nan")
+            out.confidence  = 0.0
 
-        out.status      = status
-        out.detail      = f"{arm['side']}: {detail}"
-        out.elbow_angle = float(angle)   # shoulder abduction angle
-        out.confidence  = float(arm["confidence"])
+        # right arm
+        if right is not None:
+            r_status, r_detail = self._lateral_status(right["angle"])
+            out.right_elbow_angle = float(right["angle"])
+            out.right_confidence  = float(right["confidence"])
+        else:
+            r_status = "arm_not_visible"
+            r_detail = "not visible"
+            out.right_elbow_angle = float("nan")
+            out.right_confidence  = 0.0
+
+        # overall status: use the arm lowest (furthest from top, worst case)
+        if left is not None and right is not None:
+            worst = left if left["angle"] < right["angle"] else right
+            out.status = self._lateral_status(worst["angle"])[0]
+            out.detail = f"L:{left['angle']:.0f}deg R:{right['angle']:.0f}deg"
+        elif left is not None:
+            out.status = l_status
+            out.detail = f"left: {l_detail} (right not visible)"
+        else:
+            out.status = r_status
+            out.detail = f"right: {r_detail} (left not visible)"
+
+        out.elbow_angle = out.elbow_angle   # shoulder abduction angle (left)
         return out
 
     # ------------------------------------------------------------------ #

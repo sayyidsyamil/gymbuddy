@@ -393,10 +393,6 @@ class DisplayNode:
         w, h = skeleton.image_width, skeleton.image_height
         lms = skeleton.landmarks
 
-        active_side = None
-        if form is not None and form.detail:
-            active_side = "left" if form.detail.startswith("left") else "right"
-
         active_edges = CURL_ACTIVE_EDGES if exercise == "bicep_curl" else LATERAL_ACTIVE_EDGES
 
         for i, j in SKELETON_EDGES:
@@ -421,17 +417,21 @@ class DisplayNode:
             radius = 6 if idx in (5, 6, 7, 8, 9, 10, 11, 12) else 4
             cv2.circle(frame, px, radius, CLR_JOINT, -1)
 
-        if form is not None and form.elbow_angle == form.elbow_angle:
-            angle_val = form.elbow_angle
-            side_idx = {"left":  {"s": 5, "e": 7, "w":  9, "h": 11},
-                        "right": {"s": 6, "e": 8, "w": 10, "h": 12}}
-            if active_side in side_idx:
-                idx_map = side_idx[active_side]
+        if form is not None:
+            side_map = {
+                "left":  {"s": 5, "e": 7, "w":  9, "h": 11, "angle": form.elbow_angle},
+                "right": {"s": 6, "e": 8, "w": 10, "h": 12, "angle": form.right_elbow_angle},
+            }
+            for side, idx_map in side_map.items():
+                angle_val = idx_map["angle"]
+                if angle_val != angle_val:   # NaN
+                    continue
                 s_lm = lms[idx_map["s"]]
                 e_lm = lms[idx_map["e"]]
                 w_lm = lms[idx_map["w"]]
                 h_lm = lms[idx_map["h"]]
-
+                if s_lm.visibility < 0.3 or e_lm.visibility < 0.3:
+                    continue
                 if exercise == "bicep_curl":
                     center = _px(e_lm, w, h)
                     p1     = _px(s_lm, w, h)
@@ -440,10 +440,7 @@ class DisplayNode:
                     center = _px(s_lm, w, h)
                     p1     = _px(h_lm, w, h)
                     p2     = _px(e_lm, w, h)
-
-                if (lms[idx_map["s"]].visibility > 0.3 and
-                        lms[idx_map["e"]].visibility > 0.3):
-                    _draw_angle_arc(frame, center, p1, p2, angle_val, CLR_ARC)
+                _draw_angle_arc(frame, center, p1, p2, angle_val, CLR_ARC)
 
     # ── Workout: panel ────────────────────────────────────────────────── #
 
@@ -502,10 +499,12 @@ class DisplayNode:
             cue_txt, cue_col = "NO SKELETON", (80, 80, 80)
         cv2.putText(frame, cue_txt, (30, 328), cv2.FONT_HERSHEY_SIMPLEX, 0.72, cue_col, 2)
 
-        if form is not None and form.elbow_angle == form.elbow_angle:
+        if form is not None:
             angle_label = "elbow" if exercise == "bicep_curl" else "abduction"
-            cv2.putText(frame, f"{angle_label}: {form.elbow_angle:.1f}deg",
-                        (30, 354), cv2.FONT_HERSHEY_SIMPLEX, 0.50, CLR_ACCENT, 1)
+            l_str = f"{form.elbow_angle:.1f}" if form.elbow_angle == form.elbow_angle else "--"
+            r_str = f"{form.right_elbow_angle:.1f}" if form.right_elbow_angle == form.right_elbow_angle else "--"
+            cv2.putText(frame, f"L {angle_label}: {l_str}deg  R: {r_str}deg",
+                        (30, 354), cv2.FONT_HERSHEY_SIMPLEX, 0.46, CLR_ACCENT, 1)
 
         cv2.putText(frame, "AI COACH", (30, 378), cv2.FONT_HERSHEY_SIMPLEX, 0.48, CLR_ACCENT, 1)
         self._wrap(frame, tip if coach_active else "Waiting...",
@@ -520,13 +519,14 @@ class DisplayNode:
                     (30, fh - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (160, 160, 160), 1)
 
         if debug and form is not None:
-            angle_str = f"{form.elbow_angle:.1f}" if form.elbow_angle == form.elbow_angle else "--"
+            l_str = f"{form.elbow_angle:.1f}" if form.elbow_angle == form.elbow_angle else "--"
+            r_str = f"{form.right_elbow_angle:.1f}" if form.right_elbow_angle == form.right_elbow_angle else "--"
             lines = [
                 f"exercise: {exercise}",
                 f"status: {form.status}",
                 f"detail: {form.detail}",
-                f"angle: {angle_str}",
-                f"conf: {form.confidence:.2f}",
+                f"L angle: {l_str}  R angle: {r_str}",
+                f"conf L:{form.confidence:.2f} R:{form.right_confidence:.2f}",
                 f"reps: {clean}/{total}",
                 f"issue: {stats.last_rep_issue or 'none'}" if stats else "",
             ]

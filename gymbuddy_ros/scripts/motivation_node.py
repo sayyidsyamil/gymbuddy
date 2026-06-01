@@ -12,14 +12,19 @@ CHEERS = [
     "Nice work, keep going!",
     "Stay controlled.",
     "Looking solid.",
-    "Halfway there.",
-    "Strong rep.",
+    "Strong rep, keep it up!",
+    "Good tempo, maintain it.",
+    "You're doing great!",
+    "Keep that elbow locked.",
+    "Full range, nice!",
+    "Don't stop now!",
+    "Crush it!",
 ]
 
 
 class MotivationNode:
     def __init__(self):
-        self.every_n = max(1, int(rospy.get_param("~every_n_reps", 35)))
+        self.every_n = max(1, int(rospy.get_param("~every_n_reps", 5)))
         # /tts_priority bypasses the wake-word gate in text_to_speech_node
         self.tts_pub     = rospy.Publisher("/tts_priority",    String, queue_size=4)
         # /coaching_output keeps the display panel updated

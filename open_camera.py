@@ -12,7 +12,7 @@ import numpy as np
 from ultralytics import YOLO
 
 
-MODEL_NAME = "yolo26n-pose.pt"
+MODEL_NAME = "/home/mustar/.ros/yolov8n-pose.pt"
 POSE_CONFIDENCE = 0.35
 KEYPOINT_CONFIDENCE = 0.35
 
@@ -310,6 +310,8 @@ def angle_between(a, b, c):
 
 def select_arm(result):
     if result.keypoints is None or result.keypoints.xy is None:
+        return None
+    if result.keypoints.conf is None:
         return None
     if len(result.keypoints.xy) == 0:
         return None
@@ -636,7 +638,7 @@ def print_set_review(session):
 
 def main():
     model = YOLO(MODEL_NAME)
-    camera = cv2.VideoCapture(0)
+    camera = cv2.VideoCapture(2)
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
 
@@ -715,7 +717,7 @@ def main():
             voice.stop()
         camera.release()
         cv2.destroyAllWindows()
-        COACH_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+        COACH_EXECUTOR.shutdown(wait=False)
 
 
 if __name__ == "__main__":

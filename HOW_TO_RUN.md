@@ -165,7 +165,46 @@ You should see each node log a "ready" line. The first launch will be slow
 
 ---
 
-## 7. Verify the nodes are alive
+## 7. Monitor voice pipeline logs (live)
+
+Open a new terminal and run:
+
+```bash
+# Filtered — only key events (wake triggers, transcriptions, intents)
+tail -f ~/.ros/log/latest/wake_word-*.log \
+         ~/.ros/log/latest/speech_to_text-*.log \
+         ~/.ros/log/latest/intent_extractor-*.log \
+  | grep --line-buffered -E "triggered|score|STT:|intent:|NLI|action|warn|error"
+```
+
+```bash
+# Unfiltered — full raw output from all three nodes
+tail -f ~/.ros/log/latest/wake_word-*.log \
+         ~/.ros/log/latest/speech_to_text-*.log \
+         ~/.ros/log/latest/intent_extractor-*.log
+```
+
+What to expect:
+- `wake word 'hey_jarvis' triggered (score=0.91)` — wake word fired
+- `STT: add five reps` — Whisper transcription
+- `intent_extractor: add_reps value=5` — NLP classified the command
+
+Alternatively, listen directly to the ROS topics (one per terminal):
+
+```bash
+# Terminal A — wake word armed/disarmed
+rostopic echo /system_wake_state
+
+# Terminal B — raw Whisper transcription
+rostopic echo /user_speech_raw
+
+# Terminal C — classified intent sent to workout manager
+rostopic echo /intent_update
+```
+
+---
+
+## 8. Verify the nodes are alive
 
 In a second terminal (always re-source first):
 

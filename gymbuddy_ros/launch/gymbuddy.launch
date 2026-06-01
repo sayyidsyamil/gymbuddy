@@ -1,7 +1,8 @@
 <launch>
   <arg name="camera_device" default="2"/>
   <arg name="initial_target" default="10"/>
-  <arg name="qwen_gguf" default="$(optenv GYMBUDDY_QWEN_GGUF)"/>
+  <!-- qwen_gguf: local GGUF coach — not used, Groq cloud LLM is active instead -->
+  <!-- <arg name="qwen_gguf" default="$(find gymbuddy_ros)/model/Qwen3.5-0.8B-Q4_K_M.gguf"/> -->
 
   <arg name="use_camera"       default="true"/>
   <arg name="use_astra"        default="false"/>  <!-- Astra depth (color) camera -->
@@ -11,9 +12,8 @@
   <arg name="use_tts"          default="true"/>
   <arg name="use_display"      default="true"/>
 
-  <!-- Robot USB microphone (sounddevice index 2: 'USB Device 0x46d:0x825 hw:2,0' - Logitech).
-       Set to -1 to fall back to the system default input. -->
-  <arg name="audio_device" default="2"/>
+  <arg name="mic_device"     default="7"/>  <!-- 7=pulse (PulseAudio), works at native rate -->
+  <arg name="speaker_device" default="7"/>
 
   <!-- Astra depth camera driver: publishes /camera/color/image_raw, depth, etc. -->
   <include if="$(eval arg('use_camera') and arg('use_astra'))"
@@ -30,23 +30,17 @@
   <node pkg="gymbuddy_ros" type="form_analysis_node.py" name="form_analysis" output="screen"/>
   <node pkg="gymbuddy_ros" type="rep_counter_node.py"   name="rep_counter"   output="screen"/>
 
-  <node if="$(arg use_voice)" pkg="gymbuddy_ros" type="wake_word_node.py" name="wake_word" output="screen">
-    <param name="audio_device" value="$(arg audio_device)"/>
-  </node>
-  <node if="$(arg use_voice)" pkg="gymbuddy_ros" type="speech_to_text_node.py" name="speech_to_text" output="screen">
-    <param name="audio_device" value="$(arg audio_device)"/>
+  <!-- voice_io_node replaces wake_word + speech_to_text + text_to_speech.
+       Always-on Groq STT (Whisper) + Groq TTS (Orpheus). -->
+  <node if="$(arg use_voice)" pkg="gymbuddy_ros" type="voice_io_node.py" name="voice_io" output="screen">
+    <param name="audio_device" value="$(arg mic_device)"/>
   </node>
   <node pkg="gymbuddy_ros" type="intent_extractor_node.py" name="intent_extractor" output="screen"/>
 
-  <node pkg="gymbuddy_ros" type="llm_decision_node.py" name="llm_decision" output="screen">
-    <param name="model_path" value="$(arg qwen_gguf)"/>
-  </node>
   <node pkg="gymbuddy_ros" type="workout_manager_node.py" name="workout_manager" output="screen">
     <param name="initial_target" value="$(arg initial_target)"/>
   </node>
   <node pkg="gymbuddy_ros" type="motivation_node.py" name="motivation" output="screen"/>
-
-  <node if="$(arg use_tts)" pkg="gymbuddy_ros" type="text_to_speech_node.py" name="text_to_speech" output="screen"/>
 
   <node if="$(arg use_display)" pkg="gymbuddy_ros" type="display_node.py" name="display" output="screen" required="false"/>
 </launch>

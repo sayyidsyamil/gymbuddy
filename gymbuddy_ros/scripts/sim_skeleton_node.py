@@ -9,6 +9,10 @@ from gymbuddy_ros.msg import IntentUpdate, Landmark, Skeleton
 
 
 # COCO 17-keypoint indices (YOLOv8 pose)
+LEFT_SHOULDER  =  5
+LEFT_ELBOW     =  7
+LEFT_WRIST     =  9
+LEFT_HIP       = 11
 RIGHT_SHOULDER =  6
 RIGHT_ELBOW    =  8
 RIGHT_WRIST    = 10
@@ -61,21 +65,36 @@ class SimSkeletonNode:
         landmarks = [Landmark(x=0.0, y=0.0, z=0.0, visibility=0.0)
                      for _ in range(NUM_LANDMARKS)]
 
-        shoulder_px = (480.0, 200.0)
-        elbow_px    = (480.0, 330.0)
-        hip_px      = (470.0, 380.0)
         arm_len = 130.0
         theta = math.radians(angle_degrees)
-        wrist_px = (
-            elbow_px[0] + arm_len * math.sin(theta),
-            elbow_px[1] - arm_len * math.cos(theta),
+
+        # Right arm (left side of screen when mirrored)
+        r_shoulder_px = (600.0, 200.0)
+        r_elbow_px    = (600.0, 330.0)
+        r_hip_px      = (590.0, 380.0)
+        r_wrist_px = (
+            r_elbow_px[0] + arm_len * math.sin(theta),
+            r_elbow_px[1] - arm_len * math.cos(theta),
+        )
+
+        # Left arm (mirrored — same angle for symmetric simulation)
+        l_shoulder_px = (360.0, 200.0)
+        l_elbow_px    = (360.0, 330.0)
+        l_hip_px      = (370.0, 380.0)
+        l_wrist_px = (
+            l_elbow_px[0] - arm_len * math.sin(theta),
+            l_elbow_px[1] - arm_len * math.cos(theta),
         )
 
         for index, point in (
-            (RIGHT_SHOULDER, shoulder_px),
-            (RIGHT_ELBOW,    elbow_px),
-            (RIGHT_WRIST,    wrist_px),
-            (RIGHT_HIP,      hip_px),
+            (RIGHT_SHOULDER, r_shoulder_px),
+            (RIGHT_ELBOW,    r_elbow_px),
+            (RIGHT_WRIST,    r_wrist_px),
+            (RIGHT_HIP,      r_hip_px),
+            (LEFT_SHOULDER,  l_shoulder_px),
+            (LEFT_ELBOW,     l_elbow_px),
+            (LEFT_WRIST,     l_wrist_px),
+            (LEFT_HIP,       l_hip_px),
         ):
             landmarks[index] = Landmark(
                 x=point[0] / self.image_width,
