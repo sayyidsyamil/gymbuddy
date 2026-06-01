@@ -6,7 +6,6 @@ Replaces wake_word + speech_to_text + text_to_speech nodes.
 
 Topics:
   * publishes /user_speech_raw   (std_msgs/String)  — transcribed utterance
-  * publishes /system_wake_state (std_msgs/Bool)    — latched; pulsed True after each utterance
   * subscribes /coaching_output  (std_msgs/String)  — spoken while gate is open
   * subscribes /tts_priority     (std_msgs/String)  — always spoken (motivation)
 
@@ -15,25 +14,6 @@ Params:
   ~wake_gate_seconds     (default: 30.0)   — how long coaching TTS gate stays open
   ~min_repeat_seconds    (default: 4.0)    — debounce identical TTS text
 """
-
-# --- OLD: sounddevice-based recording — crashes with PortAudio ALSA assertion on Linux ---
-# import sounddevice as sd
-# import numpy as np
-# def _query_native_rate(device):
-#     info = sd.query_devices(device, "input")
-#     return int(info["default_samplerate"])
-# def _resample(audio, src_rate, dst_rate): ...
-# class GroqVoiceIONode:
-#     def _record_while_held(self):
-#         with sd.InputStream(samplerate=self.native_rate, ...) as stream:
-#             while self._space_held.is_set(): data, _ = stream.read(CHUNK) ...
-# --- END OLD ---
-
-# --- OLD: always-on listening (goon.py / Parakeet ASR + Kokoro TTS) ---
-# import sys
-# def _import_goon(): ...goon.load_asr(), goon.load_tts()...
-# class VoiceIONode: ...listener.listen_once()...
-# --- END OLD ---
 
 import os
 import signal
@@ -45,7 +25,7 @@ import time
 import rospy
 from groq import Groq
 from pynput import keyboard
-from std_msgs.msg import Bool, String
+from std_msgs.msg import String
 
 GROQ_STT_MODEL = "whisper-large-v3-turbo"
 GROQ_TTS_MODEL = "canopylabs/orpheus-v1-english"
@@ -68,9 +48,7 @@ class GroqVoiceIONode:
         self._space_held  = threading.Event()  # set while SPACE is pressed
         self._rec_proc    = None               # active arecord subprocess
 
-        self.text_pub = rospy.Publisher("/user_speech_raw",   String, queue_size=4)
-        self.wake_pub = rospy.Publisher("/system_wake_state", Bool,   queue_size=1, latch=True)
-        self.wake_pub.publish(Bool(data=False))
+        self.text_pub = rospy.Publisher("/user_speech_raw", String, queue_size=4)
 
         rospy.Subscriber("/coaching_output", String, self._on_coaching, queue_size=8)
         rospy.Subscriber("/tts_priority",    String, self._on_priority, queue_size=8)
@@ -129,9 +107,7 @@ class GroqVoiceIONode:
 
             rospy.loginfo("STT: %s", text)
             self._gate_until = time.time() + self.wake_gate_secs
-            self.wake_pub.publish(Bool(data=True))
             self.text_pub.publish(String(data=text))
-            threading.Timer(0.25, lambda: self.wake_pub.publish(Bool(data=False))).start()
 
     def _record_while_held(self) -> bytes:
         """Record via arecord/PulseAudio while SPACE is held. Returns raw WAV bytes."""
@@ -239,17 +215,6 @@ class GroqVoiceIONode:
             self._kb_listener.stop()
         except Exception:
             pass
-
-
-# --- OLD VoiceIONode (Parakeet ASR + Kokoro TTS, always-on via goon.py) ---
-# class VoiceIONode:
-#     def __init__(self, goon):
-#         ...load_asr(), load_tts(), VoiceListener, TTSPlayer...
-#         ...always-on _listen_loop calling goon.beep + listener.listen_once()...
-# def main():  # OLD
-#     goon = _import_goon()
-#     VoiceIONode(goon)
-# --- END OLD ---
 
 
 def main():

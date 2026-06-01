@@ -6,7 +6,6 @@ import mediapipe as mp
 import numpy as np
 import rospy
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Int32MultiArray, MultiArrayDimension
 
 from gymbuddy_ros.msg import Landmark, Skeleton
 
@@ -53,8 +52,7 @@ class PoseDetectionNode:
             min_tracking_confidence=min_tracking_conf,
         )
 
-        self.skeleton_pub = rospy.Publisher("/skeleton_data",      Skeleton,         queue_size=2)
-        self.bbox_pub     = rospy.Publisher("/target_object_bbox", Int32MultiArray,  queue_size=2)
+        self.skeleton_pub = rospy.Publisher("/skeleton_data", Skeleton, queue_size=2)
 
         rospy.Subscriber("/raw_camera_frame", CompressedImage, self.on_frame, queue_size=1)
         rospy.loginfo(
@@ -92,7 +90,6 @@ class PoseDetectionNode:
         skel.image_width  = w
         skel.image_height = h
 
-        xs, ys = [], []
         for blaze_idx in BLAZE_TO_COCO:
             if blaze_idx is None:
                 # face slot — keep array length stable, but visibility=0 means
@@ -106,19 +103,8 @@ class PoseDetectionNode:
                 z=float(lm.z),
                 visibility=float(lm.visibility),
             ))
-            if lm.visibility >= 0.3:
-                xs.append(lm.x * w)
-                ys.append(lm.y * h)
 
         self.skeleton_pub.publish(skel)
-
-        if xs and ys:
-            x1, y1 = int(max(0, min(xs))), int(max(0, min(ys)))
-            x2, y2 = int(min(w, max(xs))), int(min(h, max(ys)))
-            bbox = Int32MultiArray()
-            bbox.layout.dim = [MultiArrayDimension(label="bbox", size=4, stride=4)]
-            bbox.data = [x1, y1, x2, y2]
-            self.bbox_pub.publish(bbox)
 
 
 def main():

@@ -11,33 +11,6 @@ Supported actions (published to /intent_update):
   none           — not a workout command
 """
 
-# --- OLD: local zero-shot NLI (DistilBERT MNLI) — slow, low confidence ---
-# INTENT_LABELS = {
-#     "start or begin a workout set": "start_set",
-#     "stop or finish the current workout set": "stop_set",
-#     "reset or clear all workout progress": "reset",
-#     "add more reps to the target": "add_reps",
-#     "remove or reduce reps from the target": "remove_reps",
-#     "set or change the rep target to a specific number": "update_target",
-#     "unrelated to workout control": "none",
-# }
-# CONFIDENCE_THRESHOLD = 0.45
-# def _load_model(self):
-#     from transformers import pipeline
-#     clf = pipeline("zero-shot-classification",
-#                    model="typeform/distilbert-base-uncased-mnli", device=-1)
-#     with self._clf_lock:
-#         self._classifier = clf
-# def _classify_nlp(self, clf, text):
-#     result = clf(text, self._labels, multi_label=False)
-#     top_label, top_score = result["labels"][0], result["scores"][0]
-#     if top_score < CONFIDENCE_THRESHOLD:
-#         return _regex_classify(text)
-#     action = INTENT_LABELS[top_label]
-#     value = _extract_number(text) or 0
-#     return action, value
-# --- END OLD ---
-
 import json
 import os
 import re

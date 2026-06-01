@@ -32,13 +32,10 @@ catkin_install_python(PROGRAMS
   scripts/pose_detection_node.py
   scripts/form_analysis_node.py
   scripts/rep_counter_node.py
-  scripts/wake_word_node.py
-  scripts/speech_to_text_node.py
+  scripts/voice_io_node.py
   scripts/intent_extractor_node.py
-  scripts/llm_decision_node.py
   scripts/workout_manager_node.py
   scripts/motivation_node.py
-  scripts/text_to_speech_node.py
   scripts/display_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

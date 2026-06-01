@@ -1,3 +1,16 @@
-opencv-python
-ultralytics
-numpy
+# GymBuddy — Python dependencies
+#
+# Install everything:           python3 -m pip install -r requirements.txt
+# The ROS nodes only need the "Core" block; the "Prototypes" block is for
+# the standalone scripts in tests/ and can be skipped to run the ROS app.
+
+# --- Core (gymbuddy_ros nodes) ---
+opencv-python>=4.8
+numpy>=1.24,<2
+mediapipe>=0.10        # pose_detection_node (MediaPipe Pose)
+groq>=0.11             # voice_io_node STT/TTS + intent_extractor_node LLM (Groq cloud)
+pynput>=1.7            # push-to-talk SPACE key in voice_io_node
+
+# --- Prototypes (tests/ only, not needed for the ROS app) ---
+ultralytics            # tests/open_camera.py — YOLO pose
+llama-cpp-python       # tests/open_camera.py — optional local Qwen coach
