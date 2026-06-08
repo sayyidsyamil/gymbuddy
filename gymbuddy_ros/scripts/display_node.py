@@ -8,6 +8,7 @@ Two screens:
 Workout-screen keys:
   1 — switch to Bicep Curl
   2 — switch to Lateral Raise
+  3 — switch to Squat
   D — toggle debug overlay
   Q — return to home screen
   Esc — quit the app
@@ -38,7 +39,7 @@ LANDMARKS = {
     "l_knee":        13, "r_knee":        14,
 }
 
-# Upper-body skeleton edges drawn in grey
+# Full skeleton edges drawn in grey
 SKELETON_EDGES = [
     (5,  6),
     (5,  7), (7,  9),
@@ -46,10 +47,12 @@ SKELETON_EDGES = [
     (5, 11), (6, 12),
     (11, 12),
     (11, 13), (12, 14),
+    (13, 15), (14, 16),   # knee → ankle
 ]
 
 CURL_ACTIVE_EDGES    = {(5, 7), (7, 9), (6, 8), (8, 10)}
 LATERAL_ACTIVE_EDGES = {(5, 11), (5, 7), (6, 12), (6, 8)}
+SQUAT_ACTIVE_EDGES   = {(11, 13), (13, 15), (12, 14), (14, 16)}
 
 CANVAS_W, CANVAS_H = 960, 540
 
@@ -82,7 +85,47 @@ EXERCISES = [
         "subtitle": "Shoulder abduction",
         "image":    "Dumbbell-Lateral-Raise_31c81eee-81c4-4ffe-890d-ee13dd5bbf20_600x600.webp",
     },
+    {
+        "id":       "squat",
+        "label":    "WEIGHTED SQUAT",
+        "subtitle": "Goblet / dumbbell hold",
+        "image":    "squat.webp",
+    },
 ]
+
+EX_LABELS = {
+    "bicep_curl":   "BICEP CURL",
+    "lateral_raise": "LATERAL RAISE",
+    "squat":        "WEIGHTED SQUAT",
+}
+
+SQUAT_CUE_MAP = {
+    "squat_standing":   ("STANDING",    (0, 255, 120)),
+    "squat_mid":        ("SQUATTING",   (0, 220, 255)),
+    "squat_near_depth": ("GOING DEEP",  (0, 220, 255)),
+    "squat_at_depth":   ("AT DEPTH",    (0, 255, 120)),
+    "squat_lean_fwd":   ("LEAN FWD!",   (0, 120, 255)),
+    "squat_knee_cave":  ("KNEES OUT!",  (0, 120, 255)),
+}
+
+CLR_ARM_ARC      = (50,  210, 255)   # arm-hold arc: default cyan
+CLR_ARM_GOOD     = (0,   220,  80)   # arm in hold range — green
+CLR_ARM_BAD      = (0,   100, 255)   # arm dropped / out of range — red-orange
+ARM_HOLD_MIN_DIS = 40.0              # display threshold: too compressed below this
+ARM_HOLD_MAX_DIS = 120.0             # display threshold: arms dropping above this
+
+
+def _angle_between(a, b, c):
+    """Angle in degrees at vertex b formed by rays b→a and b→c."""
+    ba = a - b;  bc = c - b
+    denom = np.linalg.norm(ba) * np.linalg.norm(bc)
+    if denom == 0:
+        return float("nan")
+    return math.degrees(math.acos(float(np.clip(np.dot(ba, bc) / denom, -1.0, 1.0))))
+
+
+def _lm_pt(lm, w, h):
+    return np.array([lm.x * w, lm.y * h])
 
 
 def _px(lm, w, h):
@@ -231,10 +274,12 @@ class DisplayNode:
         cv2.putText(frame, "Pick an exercise and your target reps.",
                     (42, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 190, 200), 1)
 
-        # exercise cards
-        card_w, card_h = 360, 280
-        gap = 40
-        total_w = card_w * len(EXERCISES) + gap * (len(EXERCISES) - 1)
+        # exercise cards — dynamically sized so all fit within the canvas
+        n      = len(EXERCISES)
+        gap    = 20
+        card_h = 280
+        card_w = min(360, (fw - gap * (n + 1)) // n)
+        total_w = card_w * n + gap * (n - 1)
         start_x = (fw - total_w) // 2
         card_y = 120
 
@@ -393,7 +438,12 @@ class DisplayNode:
         w, h = skeleton.image_width, skeleton.image_height
         lms = skeleton.landmarks
 
-        active_edges = CURL_ACTIVE_EDGES if exercise == "bicep_curl" else LATERAL_ACTIVE_EDGES
+        if exercise == "bicep_curl":
+            active_edges = CURL_ACTIVE_EDGES
+        elif exercise == "squat":
+            active_edges = SQUAT_ACTIVE_EDGES
+        else:
+            active_edges = LATERAL_ACTIVE_EDGES
 
         for i, j in SKELETON_EDGES:
             if i >= len(lms) or j >= len(lms):
@@ -414,33 +464,91 @@ class DisplayNode:
             if lm.visibility < 0.2:
                 continue
             px = _px(lm, w, h)
-            radius = 6 if idx in (5, 6, 7, 8, 9, 10, 11, 12) else 4
+            large = (5, 6, 7, 8, 9, 10, 11, 12)
+            if exercise == "squat":
+                large = large + (13, 14, 15, 16)
+            radius = 6 if idx in large else 4
             cv2.circle(frame, px, radius, CLR_JOINT, -1)
 
         if form is not None:
-            side_map = {
-                "left":  {"s": 5, "e": 7, "w":  9, "h": 11, "angle": form.elbow_angle},
-                "right": {"s": 6, "e": 8, "w": 10, "h": 12, "angle": form.right_elbow_angle},
-            }
-            for side, idx_map in side_map.items():
-                angle_val = idx_map["angle"]
-                if angle_val != angle_val:   # NaN
-                    continue
-                s_lm = lms[idx_map["s"]]
-                e_lm = lms[idx_map["e"]]
-                w_lm = lms[idx_map["w"]]
-                h_lm = lms[idx_map["h"]]
-                if s_lm.visibility < 0.3 or e_lm.visibility < 0.3:
-                    continue
-                if exercise == "bicep_curl":
-                    center = _px(e_lm, w, h)
-                    p1     = _px(s_lm, w, h)
-                    p2     = _px(w_lm, w, h)
-                else:
-                    center = _px(s_lm, w, h)
-                    p1     = _px(h_lm, w, h)
-                    p2     = _px(e_lm, w, h)
-                _draw_angle_arc(frame, center, p1, p2, angle_val, CLR_ARC)
+            if exercise == "squat":
+                # Knee arcs — angle from FormStatus (hip→knee→ankle)
+                squat_map = {
+                    "left":  {"hip": 11, "knee": 13, "ankle": 15, "angle": form.elbow_angle},
+                    "right": {"hip": 12, "knee": 14, "ankle": 16, "angle": form.right_elbow_angle},
+                }
+                for side, idx_map in squat_map.items():
+                    angle_val = idx_map["angle"]
+                    if angle_val != angle_val:
+                        continue
+                    if idx_map["ankle"] >= len(lms):
+                        continue
+                    hip_lm  = lms[idx_map["hip"]]
+                    knee_lm = lms[idx_map["knee"]]
+                    ank_lm  = lms[idx_map["ankle"]]
+                    if knee_lm.visibility < 0.3 or hip_lm.visibility < 0.3:
+                        continue
+                    _draw_angle_arc(frame,
+                                    _px(knee_lm, w, h),
+                                    _px(hip_lm, w, h),
+                                    _px(ank_lm, w, h),
+                                    angle_val, CLR_ARC)
+
+                # Arm-hold arcs — use FormStatus.aux_angle (pre-computed by form_analysis)
+                # Green = good hold (40-120°), Red = arms dropping (>120°)
+                arm_map = {
+                    "left":  (5, 7, 9,
+                               form.aux_angle if form is not None else float("nan")),
+                    "right": (6, 8, 10,
+                               form.right_aux_angle if form is not None else float("nan")),
+                }
+                for side, (si, ei, wi, precomp_angle) in arm_map.items():
+                    if wi >= len(lms):
+                        continue
+                    s_lm, e_lm, wt_lm = lms[si], lms[ei], lms[wi]
+                    if e_lm.visibility < 0.15 or s_lm.visibility < 0.15:
+                        continue
+                    # Prefer pre-computed angle; fall back to live if NaN
+                    if precomp_angle == precomp_angle:
+                        arm_angle = precomp_angle
+                    else:
+                        arm_angle = _angle_between(
+                            _lm_pt(s_lm, w, h), _lm_pt(e_lm, w, h), _lm_pt(wt_lm, w, h))
+                    if arm_angle != arm_angle:
+                        continue
+                    if ARM_HOLD_MIN_DIS <= arm_angle <= ARM_HOLD_MAX_DIS:
+                        arc_color = CLR_ARM_GOOD
+                    else:
+                        arc_color = CLR_ARM_BAD
+                    _draw_angle_arc(frame,
+                                    _px(e_lm, w, h),
+                                    _px(s_lm, w, h),
+                                    _px(wt_lm, w, h),
+                                    arm_angle, arc_color, radius=36)
+            else:
+                side_map = {
+                    "left":  {"s": 5, "e": 7, "w":  9, "h": 11, "angle": form.elbow_angle},
+                    "right": {"s": 6, "e": 8, "w": 10, "h": 12, "angle": form.right_elbow_angle},
+                }
+                for side, idx_map in side_map.items():
+                    angle_val = idx_map["angle"]
+                    if angle_val != angle_val:   # NaN
+                        continue
+                    s_lm = lms[idx_map["s"]]
+                    e_lm = lms[idx_map["e"]]
+                    w_lm = lms[idx_map["w"]]
+                    h_lm = lms[idx_map["h"]]
+                    if s_lm.visibility < 0.3 or e_lm.visibility < 0.3:
+                        continue
+                    if exercise == "bicep_curl":
+                        center = _px(e_lm, w, h)
+                        p1     = _px(s_lm, w, h)
+                        p2     = _px(w_lm, w, h)
+                    else:
+                        center = _px(s_lm, w, h)
+                        p1     = _px(h_lm, w, h)
+                        p2     = _px(e_lm, w, h)
+                    _draw_angle_arc(frame, center, p1, p2, angle_val, CLR_ARC)
 
     # ── Workout: panel ────────────────────────────────────────────────── #
 
@@ -459,14 +567,14 @@ class DisplayNode:
         if line:
             cv2.putText(frame, line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick)
 
-    def _draw_panel(self, frame, form, stats, tip, coach_active, debug, exercise):
+    def _draw_panel(self, frame, form, stats, tip, coach_active, debug, exercise, skeleton=None):
         fh, fw = frame.shape[:2]
         pw = 390
         overlay = frame.copy()
         cv2.rectangle(overlay, (0, 0), (pw, fh), CLR_BG, -1)
         cv2.addWeighted(overlay, 0.80, frame, 0.20, 0, frame)
 
-        ex_label = "BICEP CURL" if exercise == "bicep_curl" else "LATERAL RAISE"
+        ex_label = EX_LABELS.get(exercise, exercise.upper().replace("_", " "))
         cv2.putText(frame, "GYMBUDDY", (28, 46), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
         cv2.putText(frame, ex_label,   (30, 74), cv2.FONT_HERSHEY_SIMPLEX, 0.52, CLR_ACCENT, 1)
 
@@ -489,6 +597,7 @@ class DisplayNode:
             "depth_reached":  ("TOP",           (0, 255, 120)),
             "arm_at_side":    ("READY",         (0, 255, 120)),
             "at_top":         ("TOP",           (0, 255, 120)),
+            **SQUAT_CUE_MAP,
         }
         if form is not None:
             cue_txt, cue_col = CUE_MAP.get(form.status,
@@ -500,22 +609,54 @@ class DisplayNode:
         cv2.putText(frame, cue_txt, (30, 328), cv2.FONT_HERSHEY_SIMPLEX, 0.72, cue_col, 2)
 
         if form is not None:
-            angle_label = "elbow" if exercise == "bicep_curl" else "abduction"
-            l_str = f"{form.elbow_angle:.1f}" if form.elbow_angle == form.elbow_angle else "--"
-            r_str = f"{form.right_elbow_angle:.1f}" if form.right_elbow_angle == form.right_elbow_angle else "--"
-            cv2.putText(frame, f"L {angle_label}: {l_str}deg  R: {r_str}deg",
-                        (30, 354), cv2.FONT_HERSHEY_SIMPLEX, 0.46, CLR_ACCENT, 1)
+            if exercise == "squat":
+                # Show knee angles (primary) + live arm-hold angles from skeleton
+                l_k = f"{form.elbow_angle:.0f}" if form.elbow_angle == form.elbow_angle else "--"
+                r_k = f"{form.right_elbow_angle:.0f}" if form.right_elbow_angle == form.right_elbow_angle else "--"
+                cv2.putText(frame, f"KNEE  L:{l_k}deg  R:{r_k}deg",
+                            (30, 350), cv2.FONT_HERSHEY_SIMPLEX, 0.46, CLR_ACCENT, 1)
 
-        cv2.putText(frame, "AI COACH", (30, 378), cv2.FONT_HERSHEY_SIMPLEX, 0.48, CLR_ACCENT, 1)
+                # Depth percentage — how close to SQUAT_DEPTH (105°) from standing (150°)
+                best_k = None
+                if form.elbow_angle == form.elbow_angle:
+                    best_k = form.elbow_angle
+                if form.right_elbow_angle == form.right_elbow_angle:
+                    v = form.right_elbow_angle
+                    best_k = v if best_k is None else min(best_k, v)
+                if best_k is not None:
+                    depth_pct = max(0, min(100, int((150 - best_k) / (150 - 105) * 100)))
+                    col = (0, 200, 100) if depth_pct >= 100 else ((0, 190, 255) if depth_pct >= 60 else (0, 130, 255))
+                    cv2.putText(frame, f"DEPTH {depth_pct}%",
+                                (30, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.52, col, 2)
+
+                # Arm-hold angles from FormStatus — color-coded for hold quality
+                l_arm_a = form.aux_angle
+                r_arm_a = form.right_aux_angle
+                l_arm_str = f"{l_arm_a:.0f}" if l_arm_a == l_arm_a else "--"
+                r_arm_str = f"{r_arm_a:.0f}" if r_arm_a == r_arm_a else "--"
+                l_bad = (l_arm_a == l_arm_a) and not (ARM_HOLD_MIN_DIS <= l_arm_a <= ARM_HOLD_MAX_DIS)
+                r_bad = (r_arm_a == r_arm_a) and not (ARM_HOLD_MIN_DIS <= r_arm_a <= ARM_HOLD_MAX_DIS)
+                arm_col = CLR_ARM_BAD if (l_bad or r_bad) else CLR_ARM_GOOD
+                cv2.putText(frame, f"ARM   L:{l_arm_str}deg  R:{r_arm_str}deg",
+                            (30, 388), cv2.FONT_HERSHEY_SIMPLEX, 0.46, arm_col, 1)
+            else:
+                angle_label = "elbow" if exercise == "bicep_curl" else "abduction"
+                l_str = f"{form.elbow_angle:.1f}" if form.elbow_angle == form.elbow_angle else "--"
+                r_str = f"{form.right_elbow_angle:.1f}" if form.right_elbow_angle == form.right_elbow_angle else "--"
+                cv2.putText(frame, f"L {angle_label}: {l_str}deg  R: {r_str}deg",
+                            (30, 354), cv2.FONT_HERSHEY_SIMPLEX, 0.46, CLR_ACCENT, 1)
+
+        coach_y = 410 if exercise == "squat" else 378
+        cv2.putText(frame, "AI COACH", (30, coach_y), cv2.FONT_HERSHEY_SIMPLEX, 0.48, CLR_ACCENT, 1)
         self._wrap(frame, tip if coach_active else "Waiting...",
-                   30, 402, pw - 50, CLR_PANEL_TXT)
+                   30, coach_y + 24, pw - 50, CLR_PANEL_TXT)
 
         if stats and stats.last_rep_issue:
             issue_txt = stats.last_rep_issue.replace(",", "  ").replace("_", " ")
             cv2.putText(frame, f"last: {issue_txt}", (30, fh - 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.46, (200, 130, 130), 1)
 
-        cv2.putText(frame, "1:Curl  2:Raise  D:debug  Q:home  Esc:quit",
+        cv2.putText(frame, "1:Curl  2:Raise  3:Squat  D:debug  Q:home  Esc:quit",
                     (30, fh - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (160, 160, 160), 1)
 
         if debug and form is not None:
@@ -570,7 +711,7 @@ class DisplayNode:
                                 (CANVAS_W // 2 - 170, CANVAS_H // 2),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (100, 100, 100), 2)
                 self._draw_skeleton(frame, skeleton, form, exercise)
-                self._draw_panel(frame, form, stats, tip, coach_on, debug, exercise)
+                self._draw_panel(frame, form, stats, tip, coach_on, debug, exercise, skeleton)
                 cv2.imshow("GymBuddy ROS", frame)
 
             key = cv2.waitKey(30) & 0xFF
@@ -597,6 +738,11 @@ class DisplayNode:
                         self._selected_idx = 1
                     self._exercise_pub.publish(String(data="lateral_raise"))
                     rospy.loginfo("display: switched to lateral_raise")
+                elif key == ord("3"):
+                    with self._lock:
+                        self._selected_idx = 2
+                    self._exercise_pub.publish(String(data="squat"))
+                    rospy.loginfo("display: switched to squat")
 
         cv2.destroyAllWindows()
 

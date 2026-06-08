@@ -12,6 +12,7 @@ CALORIES_PER_REP = {
     "bicep_curl":     0.15,
     "one_arm_bicep_curl": 0.15,
     "lateral_raise":  0.12,
+    "squat":          0.32,
 }
 CALORIES_DEFAULT  = 0.13
 

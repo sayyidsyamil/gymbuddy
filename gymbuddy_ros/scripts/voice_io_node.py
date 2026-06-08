@@ -6,6 +6,7 @@ Replaces wake_word + speech_to_text + text_to_speech nodes.
 
 Topics:
   * publishes /user_speech_raw   (std_msgs/String)  — transcribed utterance
+  * publishes /system_wake_state (std_msgs/Bool)    — latched; pulsed True after each utterance
   * subscribes /coaching_output  (std_msgs/String)  — spoken while gate is open
   * subscribes /tts_priority     (std_msgs/String)  — always spoken (motivation)
 
@@ -25,7 +26,7 @@ import time
 import rospy
 from groq import Groq
 from pynput import keyboard
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 GROQ_STT_MODEL = "whisper-large-v3-turbo"
 GROQ_TTS_MODEL = "canopylabs/orpheus-v1-english"
@@ -48,7 +49,9 @@ class GroqVoiceIONode:
         self._space_held  = threading.Event()  # set while SPACE is pressed
         self._rec_proc    = None               # active arecord subprocess
 
-        self.text_pub = rospy.Publisher("/user_speech_raw", String, queue_size=4)
+        self.text_pub = rospy.Publisher("/user_speech_raw",   String, queue_size=4)
+        self.wake_pub = rospy.Publisher("/system_wake_state", Bool,   queue_size=1, latch=True)
+        self.wake_pub.publish(Bool(data=False))
 
         rospy.Subscriber("/coaching_output", String, self._on_coaching, queue_size=8)
         rospy.Subscriber("/tts_priority",    String, self._on_priority, queue_size=8)
@@ -107,7 +110,9 @@ class GroqVoiceIONode:
 
             rospy.loginfo("STT: %s", text)
             self._gate_until = time.time() + self.wake_gate_secs
+            self.wake_pub.publish(Bool(data=True))
             self.text_pub.publish(String(data=text))
+            threading.Timer(0.25, lambda: self.wake_pub.publish(Bool(data=False))).start()
 
     def _record_while_held(self) -> bytes:
         """Record via arecord/PulseAudio while SPACE is held. Returns raw WAV bytes."""

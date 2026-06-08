@@ -29,6 +29,15 @@ LAT_START          = 32.0
 LAT_PARTIAL        = 55.0
 LAT_TOP            = 75.0
 
+# Weighted squat thresholds — lenient so a quarter-to-half squat counts
+SQUAT_STANDING     = 150.0  # upright position
+SQUAT_START        = 145.0  # angle below this triggers a rep start
+SQUAT_PARTIAL      = 120.0  # partial depth (passes through here on way down)
+SQUAT_DEPTH        = 105.0  # target depth — achievable for most people
+SQUAT_FAST_REP     = 0.7    # squats faster than this are flagged too_fast
+SQUAT_ARM_HOLD_MAX = 120.0  # elbow angle above this = arms not holding weight
+SQUAT_ARM_DROP_RATIO = 0.30 # fraction of in-rep frames with dropped arms = issue
+
 FAST_REP_SECONDS   = 0.6
 
 # How long to wait (seconds) for the second arm to finish after the first.
@@ -159,6 +168,60 @@ class ArmState:
         self.done = True
 
 
+    # ------------------------------------------------------------------ #
+    # Squat                                                                #
+    # ------------------------------------------------------------------ #
+
+    def tick_squat(self, angle: float):
+        if self.done:
+            return
+
+        if self.best_angle is None:
+            self.best_angle = angle
+        self.best_angle = min(self.best_angle, angle)  # track deepest (lowest angle)
+
+        if self.state == "ready":
+            if angle < SQUAT_START:
+                self.rep_started_at = time.time()
+                self.best_angle     = angle
+                self.saw_top = self.saw_partial = False
+                self.state = "descending"
+
+        elif self.state == "descending":
+            if angle <= SQUAT_DEPTH:
+                self.saw_top = True      # reuse flag: "saw_top" = reached squat depth
+                self.state = "bottom"
+            elif angle <= SQUAT_PARTIAL:
+                self.saw_partial = True
+            elif angle >= SQUAT_STANDING:
+                self._finish_squat(True)
+
+        elif self.state == "bottom":
+            if angle > SQUAT_DEPTH + 15:
+                self.state = "ascending"
+
+        elif self.state == "ascending":
+            if angle >= SQUAT_STANDING:
+                self._finish_squat(True)
+            elif angle <= SQUAT_DEPTH:
+                self.state = "bottom"
+
+    def _finish_squat(self, returned: bool):
+        if self.rep_started_at is None:
+            self.reset_rep()
+            return
+        self.duration = time.time() - self.rep_started_at
+        self.issues = []
+        if not self.saw_top:
+            self.issues.append("partial_squat")
+        if not returned:
+            self.issues.append("no_return")
+        if self.duration < SQUAT_FAST_REP:
+            self.issues.append("too_fast")
+        self.done = True
+
+
+
 class RepCounterNode:
     def __init__(self):
         self.extended_angle    = float(rospy.get_param("~extended_angle",    CURL_EXTENDED))
@@ -200,17 +263,21 @@ class RepCounterNode:
         self._left  = ArmState("left")
         self._right = ArmState("right")
         self._rep_start_time = None   # when the first arm began moving
+        self._squat_arm_drop_frames = 0
+        self._squat_total_frames    = 0
 
     def _reset_rep(self):
         self._left.reset_rep()
         self._right.reset_rep()
-        self._rep_start_time = None
+        self._rep_start_time        = None
+        self._squat_arm_drop_frames = 0
+        self._squat_total_frames    = 0
 
     def publish_stats(self, last_seconds=0.0, best_angle=None, issue=""):
         with self._lock:
             exercise = self._exercise
         if best_angle is None:
-            best_angle = 180.0 if exercise == "bicep_curl" else 0.0
+            best_angle = 180.0 if exercise in ("bicep_curl", "squat") else 0.0
         msg = WorkoutStats()
         msg.header.stamp     = rospy.Time.now()
         msg.exercise         = exercise
@@ -258,6 +325,9 @@ class RepCounterNode:
 
         if exercise == "lateral_raise":
             self._tick_lateral(l_angle, r_angle)
+        elif exercise == "squat":
+            self._track_squat_arm_hold(msg.aux_angle, msg.right_aux_angle)
+            self._tick_squat(l_angle, r_angle)
         else:
             self._tick_curl(l_angle, r_angle)
 
@@ -284,6 +354,25 @@ class RepCounterNode:
     # Dual-arm lateral raise                                               #
     # ------------------------------------------------------------------ #
 
+    def _track_squat_arm_hold(self, l_arm: float, r_arm: float):
+        """Count frames where arm drops during an active squat rep."""
+        if self._left.state == "ready" and self._right.state == "ready":
+            return  # not in a rep
+        self._squat_total_frames += 1
+        l_drop = (l_arm == l_arm) and l_arm > SQUAT_ARM_HOLD_MAX  # NaN != NaN
+        r_drop = (r_arm == r_arm) and r_arm > SQUAT_ARM_HOLD_MAX
+        if l_drop or r_drop:
+            self._squat_arm_drop_frames += 1
+
+    def _tick_squat(self, l_angle: float, r_angle: float):
+        for leg, angle in ((self._left, l_angle), (self._right, r_angle)):
+            if angle != angle:   # NaN — leg not visible
+                continue
+            if leg.state == "ready" and angle < SQUAT_START:
+                if self._rep_start_time is None:
+                    self._rep_start_time = time.time()
+            leg.tick_squat(angle)
+
     def _tick_lateral(self, l_angle: float, r_angle: float):
         for arm, angle in ((self._left, l_angle), (self._right, r_angle)):
             if angle != angle:
@@ -305,12 +394,30 @@ class RepCounterNode:
         if self._rep_start_time is not None:
             elapsed = time.time() - self._rep_start_time
             if elapsed > SYNC_WINDOW and (left_done or right_done) and not (left_done and right_done):
-                # Register as an attempt with sync failure noted
-                self.total_attempts += 1
-                missing = "right_arm_late" if left_done else "left_arm_late"
-                best = self._left.best_angle if left_done else self._right.best_angle
-                dur  = max(self._left.duration, self._right.duration)
-                self.publish_stats(last_seconds=dur, best_angle=best, issue=missing)
+                done_arm   = self._left  if left_done  else self._right
+                other_arm  = self._right if left_done  else self._left
+                # Single-leg/arm fallback: if the other limb never left ready
+                # (occluded by camera angle), count the active limb's rep as valid.
+                if other_arm.state == "ready" and other_arm.rep_started_at is None:
+                    fallback_issues = list(done_arm.issues)
+                    with self._lock:
+                        ex = self._exercise
+                    if (ex == "squat" and
+                            self._squat_total_frames > 5 and
+                            self._squat_arm_drop_frames / self._squat_total_frames > SQUAT_ARM_DROP_RATIO):
+                        fallback_issues.append("arm_dropped")
+                    self.total_attempts += 1
+                    if not fallback_issues:
+                        self.clean_reps += 1
+                    self.publish_stats(last_seconds=done_arm.duration,
+                                       best_angle=done_arm.best_angle,
+                                       issue=",".join(fallback_issues))
+                else:
+                    self.total_attempts += 1
+                    missing = "right_late" if left_done else "left_late"
+                    self.publish_stats(last_seconds=done_arm.duration,
+                                       best_angle=done_arm.best_angle,
+                                       issue=missing)
                 self._reset_rep()
                 return
 
@@ -320,9 +427,17 @@ class RepCounterNode:
         # Both arms finished — combine issues
         all_issues = list(set(self._left.issues + self._right.issues))
         best_angle = (min(self._left.best_angle or 180, self._right.best_angle or 180)
-                      if self._exercise == "bicep_curl"
+                      if self._exercise in ("bicep_curl", "squat")
                       else max(self._left.best_angle or 0, self._right.best_angle or 0))
         duration = max(self._left.duration, self._right.duration)
+
+        # Weighted squat: flag if arms dropped too often during the rep
+        with self._lock:
+            ex = self._exercise
+        if (ex == "squat" and
+                self._squat_total_frames > 5 and
+                self._squat_arm_drop_frames / self._squat_total_frames > SQUAT_ARM_DROP_RATIO):
+            all_issues.append("arm_dropped")
 
         self.total_attempts += 1
         if not all_issues:

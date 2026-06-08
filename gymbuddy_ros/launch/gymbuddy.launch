@@ -25,7 +25,11 @@
     <param name="input_topic" value="$(arg astra_color_topic)"/>
   </node>
 
-  <node if="$(arg use_camera)" pkg="gymbuddy_ros" type="pose_detection_node.py" name="pose_detection" output="screen"/>
+  <node if="$(arg use_camera)" pkg="gymbuddy_ros" type="pose_detection_node.py" name="pose_detection" output="screen">
+    <!-- Lower confidence thresholds so full-body (leg) landmarks are estimated more aggressively -->
+    <param name="min_detection_confidence" value="0.3"/>
+    <param name="min_tracking_confidence"  value="0.3"/>
+  </node>
   <node if="$(arg use_sim_skeleton)" pkg="gymbuddy_ros" type="sim_skeleton_node.py" name="sim_skeleton" output="screen"/>
   <node pkg="gymbuddy_ros" type="form_analysis_node.py" name="form_analysis" output="screen"/>
   <node pkg="gymbuddy_ros" type="rep_counter_node.py"   name="rep_counter"   output="screen"/>
