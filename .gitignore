@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 *.wav
 secrets.sh
+gymbuddy_ros/model/*.gguf
